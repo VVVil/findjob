@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 密钥（真 .env 不上传）
+.env
+
+# 浏览器 profile（含登录 cookie）
+playwright_profile/
+
+# 运行时数据（爬虫产出 + 报告）
+data/jobs/*.json
+data/reports/*.md
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
