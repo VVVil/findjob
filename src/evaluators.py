@@ -103,6 +103,188 @@ EVALUATOR_WEIGHTS = {
     "culture": 0.30,
 }
 
+EXPERT_NAMES = {
+    "skill": "技术面试官",
+    "compensation": "猎头顾问",
+    "culture": "职场导师",
+}
+
+# ---------------------------------------------------------------------------
+# 多智能体辩论：互评 → 修正
+# ---------------------------------------------------------------------------
+
+CRITIQUE_PROMPT = """你是一个{role}，负责评估岗位的{domain}维度。你刚刚给出了你的初步评分。
+
+现在你看到了另外两位专家的评分和理由。请对他们的评估提出质疑或补充。
+
+**重要**：
+- 不要改变你自己的评分——你现在只是在对他们的结论发表意见
+- 指出他们可能漏掉的信息、过于乐观/悲观的判断、或逻辑矛盾
+- 如果他们评估得合理，也可以认可（但要具体说明哪里合理）
+- 只输出对另外两位专家的意见，不要评价自己
+- 一两句话即可，不要长篇大论
+
+以严格 JSON 格式返回（不要 markdown 代码块）:
+{{
+  "to_{peer1}": "对{peer1_role}的意见",
+  "to_{peer2}": "对{peer2_role}的意见"
+}}"""
+
+REVISE_PROMPT = """你是一个{role}，负责评估岗位的{domain}维度。你给了初步评分 {own_score}/10。
+
+现在另外两位专家对你的评估提出了质疑：
+
+{critiques_text}
+
+请认真考虑这些意见。你的职责仍然是{domain}，但好的意见应该被吸收。
+
+以严格 JSON 格式返回（不要 markdown 代码块）:
+{{
+  "original_score": number,
+  "final_score": number(1-10),
+  "final_reason": "最终评分理由（提到是否吸收了别人的意见）"
+}}"""
+
+
+async def critique_peers(
+    evaluator_type: str,
+    job: dict,
+    profile: dict,
+    preferences: dict,
+    own: EvalResult,
+    peers: dict[str, EvalResult],
+) -> dict[str, str]:
+    """互评轮：一个专家看到另外两位的评分后，对每人提出质疑或认可。Returns {peer_type: critique_text}"""
+    role = EXPERT_NAMES[evaluator_type]
+    domain = {
+        "skill": "技术匹配度",
+        "compensation": "薪资竞争力与成长空间",
+        "culture": "公司类型/文化/稳定性",
+    }[evaluator_type]
+
+    # 构建 prompt 中的 peer 占位符
+    peer_types = list(peers.keys())
+    prompt_mapping = {
+        "peer1": peer_types[0],
+        "peer1_role": EXPERT_NAMES[peer_types[0]],
+        "peer2": peer_types[1],
+        "peer2_role": EXPERT_NAMES[peer_types[1]],
+    }
+    system_prompt = CRITIQUE_PROMPT.format(role=role, domain=domain, **prompt_mapping)
+
+    peer_text = ""
+    for ptype, pr in peers.items():
+        peer_text += f"\n### {EXPERT_NAMES[ptype]}（{pr.score}/10）\n{pr.detail.get('reason', '无')}"
+
+    user_content = f"""## 你的原始评分
+{own.score}/10 — {own.detail.get('reason', '')}
+
+## 其他专家的评分
+{peer_text}
+
+## 岗位信息
+- 标题: {job.get('title', '无')}
+- 公司: {job.get('company', '无')}
+- 薪资: {job.get('salary', '未提供')}
+- JD 摘要: {job.get('jd_full', '')[:500]}
+"""
+
+    try:
+        response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.3,
+            max_tokens=500,
+        )
+        raw = _parse_llm_json(response.choices[0].message.content or "{}")
+        detail = json.loads(raw)
+    except (json.JSONDecodeError, Exception):
+        detail = {f"to_{pt}": "无法生成意见" for pt in peer_types}
+
+    return {pt: detail.get(f"to_{pt}", "") for pt in peer_types}
+
+
+async def revise_final(
+    evaluator_type: str,
+    job: dict,
+    profile: dict,
+    preferences: dict,
+    own: EvalResult,
+    critiques: list[str],
+) -> EvalResult:
+    """修正轮：一个专家看到别人对自己的质疑后，给出最终评分"""
+    role = EXPERT_NAMES[evaluator_type]
+    domain = {
+        "skill": "技术匹配度",
+        "compensation": "薪资竞争力与成长空间",
+        "culture": "公司类型/文化/稳定性",
+    }[evaluator_type]
+
+    critiques_text = "\n".join(f"- {c}" for c in critiques if c)
+    if not critiques_text.strip():
+        critiques_text = "（无实质性质疑）"
+
+    system_prompt = REVISE_PROMPT.format(
+        role=role, domain=domain,
+        own_score=own.score,
+        critiques_text=critiques_text,
+    )
+
+    user_content = f"""## 你的原始评分
+{own.score}/10 — {own.detail.get('reason', '')}
+
+## 岗位信息（回顾）
+- 标题: {job.get('title', '无')}
+- 公司: {job.get('company', '无')}
+- 薪资: {job.get('salary', '未提供')}
+- JD 摘要: {job.get('jd_full', '')[:500]}
+"""
+
+    try:
+        response = await client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.2,
+            max_tokens=500,
+        )
+        raw = _parse_llm_json(response.choices[0].message.content or "{}")
+        detail = json.loads(raw)
+    except (json.JSONDecodeError, Exception):
+        detail = {"final_score": own.score, "final_reason": "解析失败，维持原判"}
+
+    final_score = int(detail.get("final_score", own.score))
+    final_score = max(1, min(10, final_score))
+
+    merged_detail = dict(own.detail)
+    merged_detail["round1_score"] = own.score
+    merged_detail["round3_score"] = final_score
+    merged_detail["round3_reason"] = detail.get("final_reason", "")
+
+    return EvalResult(
+        evaluator_type=evaluator_type,
+        score=final_score,
+        detail=merged_detail,
+    )
+
+
+def _parse_llm_json(raw: str) -> str:
+    """清理 LLM 返回的 JSON 字符串（去掉 markdown fence 等）"""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+        if raw.lower().startswith("json"):
+            raw = raw[4:].strip()
+    return raw
+
 
 @dataclass
 class EvalResult:

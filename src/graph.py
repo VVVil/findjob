@@ -19,7 +19,7 @@ from src.state import AgentState
 from src.resume_parser import parse_resume_text
 from src.preference_chat import generate_question as gen_q, is_ready_signal
 from src.job_crawler import crawl_page
-from src.evaluators import run_evaluator, judge_results
+from src.evaluators import run_evaluator, judge_results, critique_peers, revise_final
 from src.report_generator import generate_markdown, save_and_get_path
 from rich.console import Console
 from rich.table import Table
@@ -33,6 +33,42 @@ EXPERT_LABEL = {
     "compensation": ("💵 薪资发展", "yellow"),
     "culture":      ("🏠 公司文化", "magenta"),
 }
+
+
+def _color_score(score: int) -> str:
+    if score >= 8:
+        return f"[green]{score}/10[/green]"
+    elif score >= 5:
+        return f"[yellow]{score}/10[/yellow]"
+    return f"[red]{score}/10[/red]"
+
+
+def _format_extra(etype: str, detail: dict) -> str:
+    """格式化专家额外信息（匹配技能/薪资/red_flags 等）"""
+    extra = ""
+    if etype == "skill":
+        matched = detail.get("matched_skills", [])
+        missing = detail.get("missing_skills", [])
+        if matched:
+            extra += f"  [green]匹配: {', '.join(matched[:5])}[/green]\n"
+        if missing:
+            extra += f"  [red]欠缺: {', '.join(missing[:5])}[/red]"
+    elif etype == "compensation":
+        salary_fit = detail.get("salary_fit", "")
+        growth = detail.get("growth", "")
+        if salary_fit:
+            extra += f"  {salary_fit}\n"
+        if growth:
+            extra += f"  {growth}"
+    elif etype == "culture":
+        red_flags = detail.get("red_flags", [])
+        green_flags = detail.get("green_flags", [])
+        if green_flags:
+            extra += f"  [green]加分: {', '.join(green_flags[:4])}[/green]\n"
+        if red_flags:
+            extra += f"  [red]警惕: {', '.join(red_flags[:4])}[/red]"
+    return extra
+
 
 # ---------------------------------------------------------------------------
 # Node 1: 简历解析
@@ -238,63 +274,91 @@ async def evaluate_all_jobs_node(state: AgentState) -> dict[str, Any]:
             f"[yellow]| {salary}[/yellow]  |  {ut}"
         )
 
-        # 3 专家并行
+        # Round 1: 三专家初评（并行）
         try:
             skill_r, comp_r, culture_r = await asyncio.gather(
                 run_evaluator("skill", job, profile, preferences),
                 run_evaluator("compensation", job, profile, preferences),
                 run_evaluator("culture", job, profile, preferences),
             )
-            eval_results = {
-                "skill": skill_r,
-                "compensation": comp_r,
-                "culture": culture_r,
-            }
 
-            # 逐个打印专家结论
-            for etype, r in eval_results.items():
+            # 逐个打印初评结论
+            console.print("  [dim]── 初评 ──[/dim]")
+            for etype, r in {"skill": skill_r, "compensation": comp_r, "culture": culture_r}.items():
                 label, color = EXPERT_LABEL[etype]
                 detail_data = r.detail
                 reason = detail_data.get("reason", "")
-
-                extra = ""
-                if etype == "skill":
-                    matched = detail_data.get("matched_skills", [])
-                    missing = detail_data.get("missing_skills", [])
-                    if matched:
-                        extra += f"  [green]匹配: {', '.join(matched[:5])}[/green]\n"
-                    if missing:
-                        extra += f"  [red]欠缺: {', '.join(missing[:5])}[/red]"
-                elif etype == "compensation":
-                    salary_fit = detail_data.get("salary_fit", "")
-                    growth = detail_data.get("growth", "")
-                    if salary_fit:
-                        extra += f"  {salary_fit}\n"
-                    if growth:
-                        extra += f"  {growth}"
-                elif etype == "culture":
-                    red_flags = detail_data.get("red_flags", [])
-                    green_flags = detail_data.get("green_flags", [])
-                    if green_flags:
-                        extra += f"  [green]加分: {', '.join(green_flags[:4])}[/green]\n"
-                    if red_flags:
-                        extra += f"  [red]警惕: {', '.join(red_flags[:4])}[/red]"
-
-                score_str = f"{r.score}/10"
-                if r.score >= 8:
-                    score_str = f"[green]{score_str}[/green]"
-                elif r.score >= 5:
-                    score_str = f"[yellow]{score_str}[/yellow]"
-                else:
-                    score_str = f"[red]{score_str}[/red]"
-
+                extra = _format_extra(etype, detail_data)
+                score_str = _color_score(r.score)
                 console.print(f"  [{color}]{label}[/{color}] {score_str} — {reason}")
                 if extra:
                     console.print(extra)
 
-            # Judge 综合
+            # Round 2: 互评 — 每个专家对另外两人提出质疑（3 parallel）
+            console.print("  [dim]── 互评 ──[/dim]")
+            skill_c, comp_c, culture_c = await asyncio.gather(
+                critique_peers("skill", job, profile, preferences, skill_r,
+                               {"compensation": comp_r, "culture": culture_r}),
+                critique_peers("compensation", job, profile, preferences, comp_r,
+                               {"skill": skill_r, "culture": culture_r}),
+                critique_peers("culture", job, profile, preferences, culture_r,
+                               {"skill": skill_r, "compensation": comp_r}),
+            )
+
+            # 展示互评结果
+            critique_map = {
+                "skill": (skill_c, "🔧"),
+                "compensation": (comp_c, "💵"),
+                "culture": (culture_c, "🏠"),
+            }
+            peer_labels = {
+                "skill": ("💵", "🏠"),
+                "compensation": ("🔧", "🏠"),
+                "culture": ("🔧", "💵"),
+            }
+            for etype, (critiques, from_icon) in critique_map.items():
+                for ptype, label_icon in zip(critiques.keys(), peer_labels[etype]):
+                    text = critiques.get(ptype, "")
+                    if text:
+                        console.print(
+                            f"  [dim]{from_icon} → {label_icon}:[/dim] {text[:100]}"
+                        )
+
+            # Round 3: 修正 — 每个专家看到别人对自己的质疑后给最终分（3 parallel）
+            console.print("  [dim]── 修正 ──[/dim]")
+            skill_f, comp_f, culture_f = await asyncio.gather(
+                revise_final("skill", job, profile, preferences, skill_r,
+                             [comp_c.get("skill", ""), culture_c.get("skill", "")]),
+                revise_final("compensation", job, profile, preferences, comp_r,
+                             [skill_c.get("compensation", ""), culture_c.get("compensation", "")]),
+                revise_final("culture", job, profile, preferences, culture_r,
+                             [skill_c.get("culture", ""), comp_c.get("culture", "")]),
+            )
+
+            # 展示修正结果
+            revised_map = {
+                "skill": (skill_r, skill_f),
+                "compensation": (comp_r, comp_f),
+                "culture": (culture_r, culture_f),
+            }
+            for etype, (old, new) in revised_map.items():
+                label, color = EXPERT_LABEL[etype]
+                if new.score != old.score:
+                    direction = "↑" if new.score > old.score else "↓"
+                    console.print(
+                        f"  [{color}]{label}[/{color}] "
+                        f"{_color_score(old.score)} {direction} {_color_score(new.score)} "
+                        f"— {new.detail.get('round3_reason', '')}"
+                    )
+                else:
+                    console.print(
+                        f"  [{color}]{label}[/{color}] "
+                        f"{_color_score(old.score)} → 坚持原判"
+                    )
+
+            # Judge 综合（用修正后的最终分）
             judged = judge_results(
-                job, [skill_r, comp_r, culture_r],
+                job, [skill_f, comp_f, culture_f],
                 collected_so_far=len(collected),
                 target_count=top_k,
             )
