@@ -1,5 +1,25 @@
-.env
-output/
+# Python
 __pycache__/
-venv/
 *.pyc
+
+# 虚拟环境
+venv/
+
+# 密钥
+.env
+
+# 浏览器 profile
+playwright_profile/
+playwright_profile_test/
+
+# 运行时数据
+data/
+output/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

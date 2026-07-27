@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-hunter — 多平台轻量海投工具（BOSS直聘 + 智联招聘）
+findjob — 多平台求职助手（BOSS直聘 + 智联招聘）
 爬岗位 → 硬过滤 → 逐条批阅 → 生成招呼语/投简历 → 发送
 
 用法:
-  python hunter.py -k "Python 后端" -e 3 -c "深圳" -p 2
-  python hunter.py --json jobs_20260722.json    # 从已有 JSON 直接进入批阅发送
+  python run.py -k "Python 后端" -e 3 -c "深圳" -p 2
+  python run.py --json jobs_20260722.json    # 从已有 JSON 直接进入批阅发送
 """
 
 import argparse
@@ -13,6 +13,7 @@ import json
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -86,7 +87,7 @@ def send_action(job: dict, greeting: str = "") -> tuple:
 # ══════════════════════════════════════════════════════
 
 def main():
-    parser = argparse.ArgumentParser(description="hunter — BOSS直聘轻量海投工具")
+    parser = argparse.ArgumentParser(description="findjob — 多平台求职助手（BOSS直聘 + 智联招聘）")
     parser.add_argument("-k", "--keywords", default="", help="搜索关键词，空格分隔")
     parser.add_argument("-e", "--exp", type=int, default=None, help="经验上限(年)，0=只要应届，不传=不过滤经验")
     parser.add_argument("-c", "--cities", default="", help="目标城市，空格分隔")
@@ -163,19 +164,18 @@ def main():
 
         jobs = []
 
-        if args.platform in ("all", "boss"):
-            console.print("[bold cyan]═══ BOSS直聘 ═══[/bold cyan]")
-            boss_jobs = scrape_boss(cfg, keywords, cities, args.pages, args.exp)
-            jobs.extend(boss_jobs)
-            console.print(f"[green]BOSS直聘: {len(boss_jobs)} 个岗位[/green]")
+        # 两个 scraper 并行跑（互不依赖，各用独立 CDP 连接）
+        futures = {}
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            if args.platform in ("all", "boss"):
+                futures[executor.submit(scrape_boss, cfg, keywords, cities, args.pages, args.exp)] = "BOSS"
+            if args.platform in ("all", "zhaopin"):
+                futures[executor.submit(scrape_zhaopin, cfg, keywords, cities, args.pages, args.exp)] = "智联"
 
-        if args.platform in ("all", "zhaopin"):
-            if args.platform == "all":
-                console.print()
-            console.print("[bold cyan]═══ 智联招聘 ═══[/bold cyan]")
-            zhilian_jobs = scrape_zhaopin(cfg, keywords, cities, args.pages, args.exp)
-            jobs.extend(zhilian_jobs)
-            console.print(f"[green]智联招聘: {len(zhilian_jobs)} 个岗位[/green]")
+            for fut, name in futures.items():
+                jobs_list = fut.result()
+                jobs.extend(jobs_list)
+                console.print(f"[green]{name}: {len(jobs_list)} 个岗位[/green]")
 
         if not jobs:
             console.print("[yellow]没有匹配的岗位！[/yellow]")
@@ -343,7 +343,8 @@ def main():
         else:
             console.print(f"[red]  ✗ 失败: {err}[/red]")
         if i < len(pending):
-            wait = random.uniform(15, 25)
+            # 智联投递间隔短，BOSS 招呼语间隔长防风控
+            wait = random.uniform(2, 5) if job.get("platform") == "zhaopin" else random.uniform(15, 25)
             console.print(f"[dim]  等待 {wait:.0f}s...[/dim]")
             time.sleep(wait)
 

@@ -1,6 +1,0 @@
-httpx
-websocket-client
-openai
-pyyaml
-rich
-python-dotenv
