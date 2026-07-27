@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pypdf import PdfReader
 
-from src.llm_client import client
+from src.llm_client import client, DEFAULT_MODEL
 
 RESUME_SYSTEM_PROMPT = """你是一个专业的简历解析器。从简历文本中提取以下字段，以严格 JSON 格式返回。
 
@@ -88,7 +88,7 @@ def extract_text(file_path: str) -> str:
 async def parse_resume_text(resume_text: str) -> dict:
     """用 DeepSeek 从简历文本中提取结构化画像 + 缺失字段列表"""
     response = await client.chat.completions.create(
-        model="deepseek-chat",
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": RESUME_SYSTEM_PROMPT},
             {"role": "user", "content": resume_text},

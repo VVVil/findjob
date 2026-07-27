@@ -1,23 +1,20 @@
 # Python
 __pycache__/
-*.py[cod]
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
+*.pyc
 
 # 虚拟环境
-.venv/
 venv/
 
-# 密钥（真 .env 不上传）
+# 密钥
 .env
 
-# 浏览器 profile（含登录 cookie）
+# 浏览器 profile
 playwright_profile/
+playwright_profile_test/
 
-# 运行时数据（爬虫产出 + 报告）
-data/jobs/*.json
-data/reports/*.md
+# 运行时数据
+data/
+output/
 
 # IDE
 .vscode/

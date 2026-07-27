@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from src.llm_client import client
+from src.llm_client import client, DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +191,7 @@ async def critique_peers(
 
     try:
         response = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
@@ -245,7 +245,7 @@ async def revise_final(
 
     try:
         response = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=DEFAULT_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
@@ -324,7 +324,7 @@ async def run_evaluator(
 """
 
     response = await client.chat.completions.create(
-        model="deepseek-chat",
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},

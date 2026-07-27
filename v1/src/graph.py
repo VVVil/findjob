@@ -161,9 +161,9 @@ async def start_search_node(state: AgentState) -> dict[str, Any]:
 请直接输出一个搜索关键词（5-10个字），就像你会敲进招聘网站的搜索框那样。只输出关键词本身，不要引号、不要解释。"""
 
     try:
-        from src.llm_client import client
+        from src.llm_client import client, DEFAULT_MODEL
         resp = await client.chat.completions.create(
-            model="deepseek-chat",
+            model=DEFAULT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
             max_tokens=40,

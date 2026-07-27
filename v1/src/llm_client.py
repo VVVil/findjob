@@ -23,3 +23,8 @@ if not DEEPSEEK_API_KEY:
     )
 
 client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+
+# CAPTCHA Agent 专用客户端（用更强的推理模型）
+CAPTCHA_MODEL = os.getenv("CAPTCHA_MODEL", "deepseek-chat")
+captcha_client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-chat")

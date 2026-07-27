@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from src.llm_client import client
+from src.llm_client import client, DEFAULT_MODEL
 
 CHAT_SYSTEM_PROMPT = """你是一个聪明、有同理心的求职顾问。你在和候选人聊天，了解他的偏好，以便后续帮他搜岗位。
 
@@ -66,7 +66,7 @@ async def generate_question(
 根据以上信息，你接下来要对候选人说什么？"""
 
     response = await client.chat.completions.create(
-        model="deepseek-chat",
+        model=DEFAULT_MODEL,
         messages=[
             {"role": "system", "content": CHAT_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
