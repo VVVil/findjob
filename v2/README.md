@@ -1,4 +1,4 @@
-# hunter — 多平台轻量海投工具
+# findjob v2 — 多平台求职助手
 
 BOSS直聘 + 智联招聘，爬岗位 → 硬过滤 → AI 评分 → 批量投递/发招呼语。
 
@@ -25,7 +25,7 @@ DEEPSEEK_API_KEY=sk-xxx
 
 ```powershell
 taskkill /F /IM chrome.exe
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_debug_hunter" "https://www.zhipin.com" "https://www.zhaopin.com"
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_debug_findjob" "https://www.zhipin.com" "https://www.zhaopin.com"
 ```
 
 开好后在浏览器里扫码登录两个平台。
@@ -39,22 +39,22 @@ cd D:\findjob\findjob_new
 .\venv\Scripts\activate
 
 # 双平台爬 + 发（默认）
-python hunter.py -k "Python Agent" -e 3 -c "深圳" -p 2
+python run.py -k "Python Agent" -e 3 -c "深圳" -p 2
 
 # 只爬智联招聘
-python hunter.py -k "Java" -c "北京" -P zhaopin
+python run.py -k "Java" -c "北京" -P zhaopin
 
 # 只爬 BOSS 直聘
-python hunter.py -k "前端" -c "上海" -P boss
+python run.py -k "前端" -c "上海" -P boss
 
 # 全自动模式：爬 → 评 → 投，零确认
-python hunter.py -k "Python" -c "深圳" -p 2 -a
+python run.py -k "Python" -c "深圳" -p 2 -a
 
 # 从已有 JSON 进入（跳过爬虫）
-python hunter.py --json output\jobs_20260725_120000.json
+python run.py --json output\jobs_20260725_120000.json
 
 # 覆盖评分阈值
-python hunter.py --json output\jobs_20260725_120000.json --score-min 70
+python run.py --json output\jobs_20260725_120000.json --score-min 70
 ```
 
 ---
@@ -152,7 +152,7 @@ output_dir: "./output"
 
 ```
 findjob_new/
-  hunter.py           # CLI 入口 + main() + 批阅主流程
+  run.py           # CLI 入口 + main() + 批阅主流程
   browser.py          # CDP 直连 Chrome（WebSocket）
   filters.py          # 硬过滤：经验/学历/薪资/屏蔽词
   ai.py               # DeepSeek：评分 + 招呼语生成
