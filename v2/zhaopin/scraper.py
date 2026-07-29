@@ -9,7 +9,6 @@ from urllib.parse import quote
 
 from rich.console import Console
 
-from browser import new_tab, close_tab, evaluate, scroll, wait_for_load
 from filters import filter_job
 
 console = Console()
@@ -143,8 +142,15 @@ JS_EXTRACT_DETAIL = """
 #  scrape()
 # ══════════════════════════════════════════════════════
 
-def scrape(cfg: dict, keywords: list[str], cities: list[str], pages: int, max_exp: int | None) -> list[dict]:
-    """爬智联岗位（列表+详情），返回过滤后的列表"""
+def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
+           per_combo_pages: int, max_exp: int | None,
+           target_per_combo: int | None = None, max_pages: int = 20) -> list[dict]:
+    """爬智联岗位（列表+详情），返回过滤后的列表。browser 为 BrowserSession 实例。
+
+    per_combo_pages: 每组合翻几页，0=不限（由 max_pages 兜底）
+    target_per_combo: 每个城市×关键词组合找多少个，凑够即停。None=不限
+    max_pages: 单组合绝对上限，防翻穿
+    """
     all_jobs = []
     seen_urls = set()
 
@@ -166,25 +172,31 @@ def scrape(cfg: dict, keywords: list[str], cities: list[str], pages: int, max_ex
     for idx, (city, city_code, keyword) in enumerate(combos, 1):
         console.print(f"[dim][{idx}/{total_combos}] 智联搜索: {city} / {keyword}[/dim]")
 
-        for page in range(1, pages + 1):
+        page_limit = per_combo_pages if per_combo_pages > 0 else max_pages
+        combo_count = 0
+
+        for page in range(1, page_limit + 1):
+            if browser.is_shutdown:
+                console.print("  [yellow]收到退出信号[/yellow]")
+                break
             search_url = SEARCH_URL.format(
                 keyword=quote(keyword),
                 city_code=city_code,
                 page=page,
             )
 
-            target_id = new_tab(search_url)
+            target_id = browser.new_tab(search_url)
             if not target_id:
                 console.print(f"[red]  无法打开搜索页 (第{page}页)[/red]")
                 break
 
             time.sleep(3)
-            wait_for_load(target_id, timeout=15)
-            scroll(target_id, y=2000)
+            browser.wait_for_load(target_id, timeout=15)
+            browser.scroll(target_id, y=2000)
             time.sleep(1)
 
-            result = evaluate(target_id, JS_EXTRACT_LIST)
-            close_tab(target_id)
+            result = browser.evaluate(target_id, JS_EXTRACT_LIST)
+            browser.close_tab(target_id)
 
             if not result:
                 console.print(f"  [red]提取失败[/red]")
@@ -203,10 +215,15 @@ def scrape(cfg: dict, keywords: list[str], cities: list[str], pages: int, max_ex
             console.print(f"  [dim]第{page}页搜到 {len(card_jobs)} 张卡片[/dim]")
             page_new = 0
             filtered_count = 0
+            dup_count = 0
 
             for job_data in card_jobs:
+                if browser.is_shutdown:
+                    console.print("  [yellow]收到退出信号[/yellow]")
+                    break
                 job_url = job_data.get("url", "")
                 if job_url in seen_urls:
+                    dup_count += 1
                     continue
                 seen_urls.add(job_url)
 
@@ -239,7 +256,7 @@ def scrape(cfg: dict, keywords: list[str], cities: list[str], pages: int, max_ex
                 console.print(f"  [dim]  📄 {company_preview} - {title_preview} ...[/dim]")
 
                 time.sleep(random.uniform(1.5, 3.0))
-                detail_target = new_tab(full_url)
+                detail_target = browser.new_tab(full_url)
                 if not detail_target:
                     console.print(f"    [yellow]✗ 打不开详情页，用列表数据[/yellow]")
                     all_jobs.append(job)
@@ -247,9 +264,9 @@ def scrape(cfg: dict, keywords: list[str], cities: list[str], pages: int, max_ex
                     continue
 
                 time.sleep(2)
-                wait_for_load(detail_target, timeout=15)
-                detail_result = evaluate(detail_target, JS_EXTRACT_DETAIL)
-                close_tab(detail_target)
+                browser.wait_for_load(detail_target, timeout=15)
+                detail_result = browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
+                browser.close_tab(detail_target)
 
                 if detail_result:
                     try:
@@ -280,10 +297,25 @@ def scrape(cfg: dict, keywords: list[str], cities: list[str], pages: int, max_ex
                 page_new += 1
                 console.print(f"    [green]✓ [{len(all_jobs)}] {job['salary']} | {job['experience']} | {job['education']}[/green]")
 
-            if page_new > 0:
-                console.print(f"  [bold]第{page}页: +{page_new} 保留[/bold] (过滤 {filtered_count}) [累计 {len(all_jobs)}]")
+            extra = ""
+            if dup_count > 0:
+                extra += f", 重复 {dup_count}"
+            console.print(f"  [bold]第{page}页: +{page_new} 保留[/bold] (过滤 {filtered_count}{extra}) [累计 {len(all_jobs)}]")
 
-            if page < pages:
+            # ── 更新组合计数 ──
+            combo_count += page_new
+
+            # ── 枯竭检测已移除 ──
+
+            # ── 组合目标达成 ──
+            if target_per_combo and combo_count >= target_per_combo:
+                console.print(f"  [green]✓ 已满{target_per_combo}个 ({combo_count}/{target_per_combo})[/green]")
+                break
+
+            if browser.is_shutdown:
+                break
+
+            if page < page_limit:
                 time.sleep(random.uniform(2.0, 4.0))
 
     return all_jobs

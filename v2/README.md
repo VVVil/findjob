@@ -34,6 +34,9 @@ taskkill /F /IM chrome.exe
 
 ## 运行
 
+//best_command
+python run.py -k "AI开发 Python Agent" -e 3 -c "深圳 广州" -p 1 -P all  
+
 ```powershell
 cd D:\findjob\findjob_new
 .\venv\Scripts\activate
@@ -148,11 +151,114 @@ output_dir: "./output"
 
 ---
 
+## 聊天 Agent（chat_agent.py）
+
+守护进程，定时轮询 BOSS 聊天页的未读消息 → AI 生成回复 → 你在终端逐个审核发送。
+
+### 运行
+
+```powershell
+cd D:\findjob\findjob_new\v2
+.\venv\Scripts\activate
+
+# 默认每 3 分钟轮询一次
+python chat_agent.py
+
+# 自定义轮询间隔（5 分钟）
+python chat_agent.py -i 5
+
+# 只跑一轮（不循环）
+python chat_agent.py --once
+```
+
+前提：Chrome 已以 debug 模式启动，且打开了 BOSS 聊天页 `https://www.zhipin.com/web/geek/chat`。
+
+### 交互流程
+
+```
+═══ 3 个未读会话 ═══
+
+  [1] 沈女士 | 乐恋屋
+      稍等我加你
+      19:11
+  [2] 李飞 | 意如图真科技
+      你好，我们公司正在招聘初级java开发工程师，请问考虑吗
+      21:43
+  [3] 付先生 | 上海勤穆网络科技
+      您是否接受此工作地点?
+      17:43
+
+a=全部 / 1,3=选第1和第3 / q=跳过本轮
+处理哪些? (a):
+```
+
+选择后会逐个展示：
+
+```
+── [1/3] 沈女士 | 乐恋屋 ──
+
+── 对话历史 ──
+  我  看到这个岗位感觉挺对口的，我之前...
+  HR  我们前期更专注于自动化工作流赋能各职能部门，愿意来做这一块吗
+  HR  现在方便吗，加个微信语音沟通一会？
+  我  好的
+  我  已经加了
+  HR  稍等我加你                           ← 未读
+
+── 建议回复 ──
+好的，通过后随时喊我，我这边现在方便语音。
+
+── 建议动作 ──
+  [发简历] 尚未发送附件简历
+
+  y=发送回复  n=跳过  e=编辑  r=回复+发简历
+```
+
+### 操作说明
+
+| 操作 | 行为 |
+|------|------|
+| `y` | 只发送 AI 回复 |
+| `n` | 跳过，不处理这个会话 |
+| `e` | 编辑回复文本后再发送 |
+| `r` | 发送回复 + 发送附件简历（发送前选最新版本） |
+
+### 会话选择
+
+| 输入 | 行为 |
+|------|------|
+| `a` | 逐个审核所有未读会话 |
+| `1,3` | 只处理第 1 和第 3 个 |
+| `q` | 跳过本轮，等下次轮询 |
+
+### 去重机制
+
+处理过的会话会记录在 `output/chat_state.json`。下次轮询时，如果最后一条 HR 消息跟上次一样（hash 对比），自动跳过，不会重复生成回复。
+
+### 简历检测
+
+脚本会自动从对话历史判断是否已经发过附件简历。检测到以下关键词会跳过建议发简历：
+- "已发送给Boss"
+- "对方已查看了您的附件简历"
+- "您的附件简历"
+
+### 参数
+
+| 参数 | 说明 | 默认 |
+|------|------|------|
+| `-i, --interval` | 轮询间隔（分钟） | `3` |
+| `--once` | 只跑一轮，不循环 | — |
+
+`Ctrl+C` 随时退出。
+
+---
+
 ## 项目结构
 
 ```
-findjob_new/
-  run.py           # CLI 入口 + main() + 批阅主流程
+findjob_new/v2/
+  run.py              # CLI 入口 + 批阅主流程（爬→评→发）
+  chat_agent.py       # 聊天守护进程（轮询未读→AI回复→审核发送）
   browser.py          # CDP 直连 Chrome（WebSocket）
   filters.py          # 硬过滤：经验/学历/薪资/屏蔽词
   ai.py               # DeepSeek：评分 + 招呼语生成
@@ -161,13 +267,14 @@ findjob_new/
   requirements.txt
   boss/               # BOSS 直聘
     __init__.py
-    scraper.py         #   列表+详情 JS 提取 + scrape()
-    sender.py          #   发招呼语 + 轻触模式
+    scraper.py        #   列表+详情 JS 提取 + scrape()
+    sender.py         #   发招呼语 + 轻触模式
+    chat.py           #   聊天操作：检测未读、读消息、发简历
   zhaopin/            # 智联招聘
     __init__.py
-    scraper.py         #   列表+详情 JS 提取 + scrape()
-    sender.py          #   投递简历（在线简历）
-  output/             # 爬虫 JSON 输出
+    scraper.py        #   列表+详情 JS 提取 + scrape()
+    sender.py         #   投递简历（在线简历）
+  output/             # 爬虫 JSON + chat_state.json
 ```
 
 ---

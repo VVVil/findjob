@@ -117,15 +117,11 @@ def filter_job(job: dict, cfg: dict, max_exp: int | None) -> bool:
     if smin > 0 and smax_k is not None and smax_k < smin:
         return False
 
-    # 薪资上限
+    # 薪资上限：只过滤完全无交集的（底薪 > salary_max）
     smax_limit = cfg.get("salary_max", 0)
     if smax_limit > 0 and smax_k is not None:
-        # 底薪超过上限 → 过滤
         smin_k = _parse_salary_min_k(salary)
         if smin_k is not None and smin_k > smax_limit:
-            return False
-        # 顶薪超过上限 → 也过滤
-        if smax_k > smax_limit:
             return False
 
     # 经验过滤

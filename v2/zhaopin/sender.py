@@ -8,8 +8,6 @@ import time
 
 from rich.console import Console
 
-from browser import new_tab, close_tab, evaluate, wait_for_load
-
 console = Console()
 
 # ── JS 脚本 ──────────────────────────────────────────
@@ -51,7 +49,7 @@ JS_CLICK_DELIVERY = """
 
 # ── 投递 ─────────────────────────────────────────────
 
-def apply_job(job: dict) -> bool:
+def apply_job(browser, job: dict) -> bool:
     """打开智联岗位详情页 → 点"立即投递" → 弹窗点"投递简历" → 关闭。
     返回 True 表示投递成功。
     """
@@ -64,32 +62,32 @@ def apply_job(job: dict) -> bool:
     title = job.get("title", "?")[:20]
     console.print(f"  [dim]📨 {company} - {title}[/dim]")
 
-    target_id = new_tab(url)
+    target_id = browser.new_tab(url)
     if not target_id:
         console.print(f"  [red]✗ 打不开页面[/red]")
         return False
 
     time.sleep(2)
-    wait_for_load(target_id, timeout=15)
+    browser.wait_for_load(target_id, timeout=15)
     time.sleep(1)
 
     # ── 第1步：点击"立即投递" ──
-    result = evaluate(target_id, JS_CLICK_SUBMIT, timeout=10)
+    result = browser.evaluate(target_id, JS_CLICK_SUBMIT, timeout=10)
     if not result:
-        close_tab(target_id)
+        browser.close_tab(target_id)
         console.print(f"  [red]✗ 点击投递按钮无返回[/red]")
         return False
 
     try:
         r = json.loads(result) if isinstance(result, str) else result
     except (json.JSONDecodeError, TypeError):
-        close_tab(target_id)
+        browser.close_tab(target_id)
         console.print(f"  [red]✗ step1 解析失败[/red]")
         return False
 
     if not r.get("success"):
         err = r.get("error", "unknown")
-        close_tab(target_id)
+        browser.close_tab(target_id)
         if err == "already_applied":
             console.print(f"  [yellow]⊘ 已投递过[/yellow]")
         else:
@@ -100,27 +98,42 @@ def apply_job(job: dict) -> bool:
     time.sleep(2)
 
     # ── 第2步：弹窗中点击"投递简历" ──
-    result2 = evaluate(target_id, JS_CLICK_DELIVERY, timeout=10)
-    if not result2:
-        close_tab(target_id)
-        console.print(f"  [red]✗ 点击投递简历无返回[/red]")
-        return False
+    result2 = browser.evaluate(target_id, JS_CLICK_DELIVERY, timeout=10)
 
-    try:
-        r2 = json.loads(result2) if isinstance(result2, str) else result2
-    except (json.JSONDecodeError, TypeError):
-        close_tab(target_id)
-        console.print(f"  [red]✗ step2 解析失败[/red]")
-        return False
+    # 解析 step2 结果
+    step2_ok = False
+    step2_err = "unknown"
+    if result2:
+        try:
+            r2 = json.loads(result2) if isinstance(result2, str) else result2
+            if r2.get("success"):
+                step2_ok = True
+            else:
+                step2_err = r2.get("error", "unknown")
+        except (json.JSONDecodeError, TypeError):
+            step2_err = "parse_error"
 
-    if not r2.get("success"):
-        err = r2.get("error", "unknown")
-        close_tab(target_id)
-        console.print(f"  [yellow]⊘ 弹窗: {err}[/yellow]")
-        return False
+    if not step2_ok:
+        # 新版智联可能没有弹窗——点"立即投递"后直接投了。
+        # Step 1 已成功点击，检测按钮是否变成"已投递"确认实际结果
+        confirm = browser.evaluate(target_id, """
+        (() => {
+            const btn = document.querySelector('.summary-planes__action .a-button[disabled]');
+            if (btn && btn.textContent.includes('已投递')) return 'applied';
+            const btn2 = document.querySelector('.summary-planes__action .a-button');
+            if (btn2 && btn2.textContent.includes('已投递')) return 'applied';
+            return 'unknown';
+        })()
+        """, timeout=5)
+        if confirm and "applied" in str(confirm):
+            step2_ok = True  # 实际已投递，没有弹窗而已
+        else:
+            browser.close_tab(target_id)
+            console.print(f"  [yellow]⊘ 弹窗: {step2_err}[/yellow]")
+            return False
 
     # 等投递完成
     time.sleep(2)
-    close_tab(target_id)
+    browser.close_tab(target_id)
     console.print(f"  [green]✓ 已投递[/green]")
     return True

@@ -8,14 +8,12 @@ import time
 
 from rich.console import Console
 
-from browser import new_tab, close_tab, evaluate, navigate, wait_for_load
-
 console = Console()
 
 
 # ── 发送招呼语 ────────────────────────────────────────
 
-def send_greeting(job: dict, greeting: str, fast: bool = False) -> tuple[bool, str]:
+def send_greeting(browser, job: dict, greeting: str, fast: bool = False) -> tuple[bool, str]:
     """统一流程：点按钮 → 导航到聊天页 → 匹配会话 → 发自定义招呼语。
 
     兼容两种模式：
@@ -25,15 +23,15 @@ def send_greeting(job: dict, greeting: str, fast: bool = False) -> tuple[bool, s
 
     fast=True 时跳过模拟浏览，用于批量发送模式。
     """
-    target_id = new_tab(job["url"])
+    target_id = browser.new_tab(job["url"])
     if not target_id:
         return False, "无法打开岗位页"
 
     time.sleep(3)
-    wait_for_load(target_id, timeout=10)
+    browser.wait_for_load(target_id, timeout=10)
     time.sleep(1)
 
-    # 模拟浏览（批发送时缩短）
+    # 模拟浏览（批量发送时缩短）
     browse_time = random.uniform(2, 5) if fast else random.uniform(8, 15)
     console.print(f"[dim]  浏览中 ({browse_time:.0f}s)...[/dim]")
     time.sleep(browse_time)
@@ -47,26 +45,26 @@ def send_greeting(job: dict, greeting: str, fast: bool = False) -> tuple[bool, s
         return JSON.stringify({success: true});
     })()
     """
-    step1 = evaluate(target_id, click_js, timeout=10)
+    step1 = browser.evaluate(target_id, click_js, timeout=10)
     if not step1:
-        close_tab(target_id)
+        browser.close_tab(target_id)
         return False, "点击按钮无返回"
     try:
         r1 = json.loads(step1) if isinstance(step1, str) else step1
         if not r1.get("success"):
-            close_tab(target_id)
+            browser.close_tab(target_id)
             return False, r1.get("error", "没找到沟通按钮")
     except (json.JSONDecodeError, TypeError):
-        close_tab(target_id)
-        return False, f"step1解析失败: {str(step1)[:80]}"
+        browser.close_tab(target_id)
+        return False, f"step1 解析失败: {str(step1)[:80]}"
 
     # 等默认招呼语发出（弹窗出现 → 自动发送 → 弹窗关闭）
     time.sleep(3)
 
     # ── 第2步：导航到聊天页 ──
-    navigate(target_id, "https://www.zhipin.com/web/geek/chat")
+    browser.navigate(target_id, "https://www.zhipin.com/web/geek/chat")
     time.sleep(3)
-    wait_for_load(target_id, timeout=10)
+    browser.wait_for_load(target_id, timeout=10)
     time.sleep(2)
 
     # ── 第3步：匹配会话 → 点击进入 ──
@@ -97,13 +95,13 @@ def send_greeting(job: dict, greeting: str, fast: bool = False) -> tuple[bool, s
         return JSON.stringify({{success: false, error: 'no_match', hr_name: hrName, company: company, all: allItems}});
     }})()
     """
-    match_result = evaluate(target_id, match_js, timeout=10)
+    match_result = browser.evaluate(target_id, match_js, timeout=10)
     try:
         mr = json.loads(match_result) if isinstance(match_result, str) else match_result
         if not mr or not mr.get("success"):
             all_convos = mr.get("all", []) if mr else []
             err_detail = mr.get("error", "unknown") if mr else "none"
-            close_tab(target_id)
+            browser.close_tab(target_id)
             return False, f"匹配失败({err_detail}) hr={job.get('hr_name','?')} company={job.get('company','?')} convos={all_convos[:5]}"
     except (json.JSONDecodeError, TypeError):
         pass  # 非关键步骤，继续
@@ -112,7 +110,7 @@ def send_greeting(job: dict, greeting: str, fast: bool = False) -> tuple[bool, s
     time.sleep(2)
     # 确认 #chat-input 就绪
     for _ in range(15):
-        ready = evaluate(target_id, "!!document.querySelector('#chat-input')")
+        ready = browser.evaluate(target_id, "!!document.querySelector('#chat-input')")
         if ready:
             break
         time.sleep(0.5)
@@ -154,11 +152,11 @@ def send_greeting(job: dict, greeting: str, fast: bool = False) -> tuple[bool, s
         return JSON.stringify({{success: false, error: 'no_send_method'}});
     }})()
     """
-    result = evaluate(target_id, send_js, timeout=15)
-    close_tab(target_id)
+    result = browser.evaluate(target_id, send_js, timeout=15)
+    browser.close_tab(target_id)
 
     if not result:
-        return False, "发送JS无返回"
+        return False, "发送 JS 无返回"
     try:
         data = json.loads(result) if isinstance(result, str) else result
         if data.get("success"):
@@ -170,14 +168,14 @@ def send_greeting(job: dict, greeting: str, fast: bool = False) -> tuple[bool, s
 
 # ── 轻触模式 ──────────────────────────────────────────
 
-def touch_job(job: dict) -> bool:
+def touch_job(browser, job: dict) -> bool:
     """打开岗位页 → 点立即沟通（发默认招呼语）→ 关闭。不导航、不填消息。"""
-    target_id = new_tab(job["url"])
+    target_id = browser.new_tab(job["url"])
     if not target_id:
         return False
 
     time.sleep(2)
-    wait_for_load(target_id, timeout=10)
+    browser.wait_for_load(target_id, timeout=10)
 
     click_js = """
     (() => {
@@ -187,9 +185,9 @@ def touch_job(job: dict) -> bool:
         return JSON.stringify({success: true});
     })()
     """
-    result = evaluate(target_id, click_js, timeout=10)
+    result = browser.evaluate(target_id, click_js, timeout=10)
     time.sleep(3)  # 等默认招呼语发出 + 弹窗关闭
-    close_tab(target_id)
+    browser.close_tab(target_id)
 
     if not result:
         return False

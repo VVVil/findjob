@@ -24,7 +24,11 @@ def load_api_client(cfg: dict) -> OpenAI:
         # hunter.py 会先调用 set_env_dir()
         _ENV_DIR = Path(__file__).resolve().parent
 
-    load_dotenv(_ENV_DIR / ".env")
+    # 先找 v2/.env，再找上一级 findjob_new/.env
+    env_path = _ENV_DIR / ".env"
+    if not env_path.exists():
+        env_path = _ENV_DIR.parent / ".env"
+    load_dotenv(env_path)
     ai_cfg = cfg.get("ai", {})
     api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY") or ai_cfg.get("api_key", "")
     base_url = os.getenv("OPENAI_BASE_URL") or ai_cfg.get("base_url", "https://api.deepseek.com/v1")
