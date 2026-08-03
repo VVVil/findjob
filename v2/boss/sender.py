@@ -59,7 +59,55 @@ def send_greeting(browser, job: dict, greeting: str, fast: bool = False) -> tupl
         return False, f"step1 解析失败: {str(step1)[:80]}"
 
     # 等默认招呼语发出（弹窗出现 → 自动发送 → 弹窗关闭）
-    time.sleep(3)
+    time.sleep(2)
+
+    # ── 第1.5步：关闭"今天已联系过 N 位"的限频弹窗 ──
+    # 弹窗是 position:fixed，offsetParent 为 null，所以用 getBoundingClientRect 判断可见性
+    dismiss_js = """
+    (() => {
+        const isVisible = (el) => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+        // 先找弹窗容器
+        for (const popSel of ['.boss-popup__wrapper', '[class*="popup"]', '[class*="dialog"]', '[class*="modal"]', '[class*="overlay"]', '.van-popup', '.van-dialog']) {
+            const popup = document.querySelector(popSel);
+            if (!popup || !isVisible(popup)) continue;
+            const text = popup.textContent;
+            if (!text.includes('联系过')) continue;
+            // 在弹窗里找确认按钮
+            const btns = popup.querySelectorAll('span, button, a, div');
+            for (const btn of btns) {
+                const t = btn.textContent.trim();
+                if ((t === '好' || t === '好的' || t === '确定' || t === '确认' || t === '我知道了') && isVisible(btn)) {
+                    btn.click();
+                    return JSON.stringify({dismissed: true, text: t, selector: popSel});
+                }
+            }
+            // 兜底：点弹窗里最后一个可见按钮
+            for (let i = btns.length - 1; i >= 0; i--) {
+                if (isVisible(btns[i]) && btns[i].textContent.trim().length <= 10) {
+                    btns[i].click();
+                    return JSON.stringify({dismissed: true, text: btns[i].textContent.trim(), fallback: true});
+                }
+            }
+        }
+        return JSON.stringify({dismissed: false});
+    })()
+    """
+    dismiss_result = browser.evaluate(target_id, dismiss_js, timeout=5)
+    try:
+        dr = json.loads(dismiss_result) if isinstance(dismiss_result, str) else dismiss_result
+        if dr and dr.get("dismissed"):
+            console.print(f"[dim]  已关闭限频弹窗 ({dr.get('text', '')})[/dim]")
+            time.sleep(1.5)
+        elif dr:
+            console.print(f"[yellow]  限频弹窗未关闭[/yellow]")
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 等聊天弹窗/页面就绪
+    time.sleep(1)
 
     # ── 第2步：导航到聊天页 ──
     browser.navigate(target_id, "https://www.zhipin.com/web/geek/chat")
@@ -186,7 +234,41 @@ def touch_job(browser, job: dict) -> bool:
     })()
     """
     result = browser.evaluate(target_id, click_js, timeout=10)
-    time.sleep(3)  # 等默认招呼语发出 + 弹窗关闭
+    time.sleep(2)
+
+    # 关闭"今天已联系过 N 位"的限频弹窗（弹窗是 position:fixed，offsetParent 不可用）
+    dismiss_js = """
+    (() => {
+        const isVisible = (el) => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+        for (const popSel of ['.boss-popup__wrapper', '[class*="popup"]', '[class*="dialog"]', '[class*="modal"]', '[class*="overlay"]', '.van-popup', '.van-dialog']) {
+            const popup = document.querySelector(popSel);
+            if (!popup || !isVisible(popup)) continue;
+            const text = popup.textContent;
+            if (!text.includes('联系过')) continue;
+            const btns = popup.querySelectorAll('span, button, a, div');
+            for (const btn of btns) {
+                const t = btn.textContent.trim();
+                if ((t === '好' || t === '好的' || t === '确定' || t === '确认' || t === '我知道了') && isVisible(btn)) {
+                    btn.click();
+                    return JSON.stringify({dismissed: true, text: t, selector: popSel});
+                }
+            }
+            for (let i = btns.length - 1; i >= 0; i--) {
+                if (isVisible(btns[i]) && btns[i].textContent.trim().length <= 10) {
+                    btns[i].click();
+                    return JSON.stringify({dismissed: true, text: btns[i].textContent.trim(), fallback: true});
+                }
+            }
+        }
+        return JSON.stringify({dismissed: false});
+    })()
+    """
+    browser.evaluate(target_id, dismiss_js, timeout=5)
+
+    time.sleep(2)  # 等默认招呼语发出 + 弹窗关闭
     browser.close_tab(target_id)
 
     if not result:

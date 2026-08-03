@@ -126,6 +126,8 @@ def main():
                         help="目标平台：all=双平台, boss=仅BOSS, zhaopin=仅智联 (默认all)")
     parser.add_argument("--salary-min", type=int, default=None, help="最低薪资K")
     parser.add_argument("--salary-max", type=int, default=None, help="最高薪资K")
+    parser.add_argument("--scale-min", type=int, default=None, help="BOSS公司最小规模(人数)")
+    parser.add_argument("--scale-max", type=int, default=None, help="BOSS公司最大规模(人数)")
     parser.add_argument("-d", "--deal-breakers", default="", help="屏蔽词，空格分隔")
     parser.add_argument("--json", dest="json_file", help="从已有 JSON 文件直接进入批阅发送")
     parser.add_argument("--score-min", type=int, default=None, help="评分阈值，低于此分自动筛掉")
@@ -142,6 +144,9 @@ def main():
         cfg["salary_max"] = args.salary_max
     if args.deal_breakers:
         cfg["deal_breakers"] = args.deal_breakers.split()
+    if args.scale_min is not None or args.scale_max is not None:
+        from boss.scraper import _build_scale_param
+        cfg["boss_scale"] = _build_scale_param(args.scale_min, args.scale_max)
 
     browser_cfg = cfg.get("browser", {})
     boss_port = browser_cfg.get("boss_port", 9222)
@@ -311,17 +316,17 @@ def main():
     console.print(f"[bold cyan]═══ 批阅 {len(jobs)} 个岗位 ═══[/bold cyan]")
 
     if args.auto:
-        choice = "a"
+        choice = "1"
         console.print("[bold green]  🤖 全自动模式：爬→评→投递/发招呼语，零确认[/bold green]")
     else:
-        console.print("  a = 全投（批量投递/发招呼语） | s = 逐个审 | t = 轻触（只点沟通/投递） | q = 退出")
-        choice = Prompt.ask("[bold]操作[/bold]", choices=["a", "s", "t", "q"], default="s")
+        console.print("  1 = 全投（批量投递/发招呼语） | 2 = 逐个审 | 3 = 轻触（只点沟通/投递） | 4 = 退出")
+        choice = Prompt.ask("[bold]操作[/bold]", choices=["1", "2", "3", "4"], default="2")
 
-    if choice == "q":
+    if choice == "4":
         console.print("[yellow]已退出[/yellow]")
         sys.exit(0)
 
-    if choice == "t":
+    if choice == "3":
         # 轻触模式：BOSS=立即沟通, 智联=立即投递，不用大模型
         console.print(f"\n[bold]t 模式：轻触 {len(jobs)} 个岗位[/bold]\n")
         touched = 0
@@ -343,8 +348,8 @@ def main():
     # ═══════════════════════════════════════════
     pending = []
 
-    if choice == "a":
-        # a 模式：BOSS=生成招呼语, 智联=直接投递 → 批量
+    if choice == "1":
+        # 1 模式：BOSS=生成招呼语, 智联=直接投递 → 批量
         console.print(f"\n[bold]全投模式：{len(jobs)} 个岗位[/bold]\n")
         for i, job in enumerate(jobs, 1):
             p = platform_label(job)
@@ -360,7 +365,7 @@ def main():
                 pending.append((job, greeting))
         console.print(f"\n[green]✓ 待处理队列: {len(pending)} 个（招呼语+投递）[/green]\n")
     else:
-        # s 模式：逐条审 → 平台感知
+        # 2 模式：逐条审 → 平台感知
         for i, job in enumerate(jobs, 1):
             p = platform_label(job)
             console.print()

@@ -2,6 +2,8 @@
 爬虫模块 — JS 提取脚本 + scrape() 主函数
 """
 
+from __future__ import annotations
+
 import json
 import random
 import time
@@ -14,7 +16,7 @@ from filters import filter_job
 console = Console()
 
 # ── BOSS直聘搜索 URL ─────────────────────────────────
-SEARCH_URL = "https://www.zhipin.com/web/geek/job?query={keyword}&city={city_code}"
+SEARCH_URL = "https://www.zhipin.com/web/geek/jobs?query={keyword}&city={city_code}"
 
 CITY_CODES = {
     "北京": "101010100", "上海": "101020100", "深圳": "101280600",
@@ -27,27 +29,52 @@ CITY_CODES = {
 }
 
 # BOSS 经验分段（URL 粗筛用），支持逗号拼接
-# 101=应届, 102=经验不限, 103=1年以内, 104=1-3年, 105=3-5年, 106=5-10年, 107=10年以上
+# 101=经验不限, 102=应届, 103=1年以内, 104=1-3年, 105=3-5年, 106=5-10年, 107=10年以上
 EXP_BANDS = [
-    ("101",  0,  0),
-    ("102",  0, 99),
-    ("103",  0,  1),
-    ("104",  1,  3),
-    ("105",  3,  5),
-    ("106",  5, 10),
-    ("107", 10, 99),
+    ("101",  0, 99),   # 经验不限
+    ("102",  0,  0),   # 应届
+    ("103",  0,  1),   # 1年以内
+    ("104",  1,  3),   # 1-3年
+    ("105",  3,  5),   # 3-5年
+    ("106",  5, 10),   # 5-10年
+    ("107", 10, 99),   # 10年以上
 ]
 
 # 薪资分段是互斥的，无法多选 → 不拼 URL 参数，留在 Python 端精确过滤
 
+# BOSS 公司规模参数，支持逗号拼接
+# 301=0-20人, 302=20-99人, 303=100-499人, 304=500-999人, 305=1000-9999人, 306=10000人以上
+SCALE_BANDS = [
+    ("301",  0,  20),
+    ("302",  20,  99),
+    ("303", 100, 499),
+    ("304", 500, 999),
+    ("305", 1000, 9999),
+    ("306", 10000, 999999),
+]
+
+
+def _build_scale_param(scale_min: int | None, scale_max: int | None) -> str:
+    """将人数范围映射为 BOSS scale 参数值（取有交集的段）"""
+    if scale_min is None and scale_max is None:
+        return ""
+    codes = []
+    for code, lo, hi in SCALE_BANDS:
+        if scale_min is not None and hi <= scale_min:
+            continue
+        if scale_max is not None and lo > scale_max:
+            continue
+        codes.append(code)
+    return ",".join(codes) if codes else ""
+
 
 def _build_exp_param(max_exp: int | None) -> str:
-    """将 max_exp 映射为 BOSS experience 参数值（逗号分隔），None = 不过滤"""
+    """将 max_exp 映射为 BOSS experience 参数值（逗号分隔），None = 经验不限"""
     if max_exp is None:
-        return ""
+        return "101"                                 # 默认经验不限
     if max_exp == 0:
-        return "101"                                 # 只要应届，不含经验不限
-    codes = ["102"]                                  # 经验不限总是带上
+        return "102"                                 # 只要应届
+    codes = ["101"]                                  # 经验不限总是带上
     for code, lo, hi in EXP_BANDS:
         if code in ("101", "102"):
             continue
@@ -163,12 +190,14 @@ JS_EXTRACT_DETAIL = """
 
 def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
            per_combo_pages: int, max_exp: int | None,
-           target_per_combo: int | None = None, max_pages: int = 20) -> list[dict]:
+           target_per_combo: int | None = None, max_pages: int = 20,
+           on_progress: callable | None = None) -> list[dict]:
     """爬 BOSS 岗位，返回过滤后的列表。browser 为 BrowserSession 实例。
 
     per_combo_pages: 每组合翻几页，0=不限（由 max_pages 兜底）
     target_per_combo: 每个城市×关键词组合找多少个，凑够即停。None=不限
     max_pages: 单组合绝对上限，防翻穿
+    on_progress: 可选回调，签名 (event_type: str, data: dict)，用于 Web 端实时进度
     """
     all_jobs = []
     seen_urls = set()
@@ -186,13 +215,16 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
         console.print("[red]没有有效搜索组合[/red]")
         return []
 
-    # ── URL 参数预计算（薪资互斥无法多选，留在 Python 端过滤） ──
+    # ── URL 参数预计算 ──
     exp_param = _build_exp_param(max_exp)
+    scale_param = cfg.get("boss_scale", "")  # 如 "302,303,304,305,306"
 
     total_combos = len(combos)
 
     for idx, (city, city_code, keyword) in enumerate(combos, 1):
         console.print(f"[dim][{idx}/{total_combos}] 搜索: {city} / {keyword}[/dim]")
+        if on_progress:
+            on_progress("combo_start", {"idx": idx, "total": total_combos, "city": city, "keyword": keyword})
 
         page_limit = per_combo_pages if per_combo_pages > 0 else max_pages
         combo_count = 0
@@ -204,6 +236,8 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
             search_url = SEARCH_URL.format(keyword=quote(keyword), city_code=city_code) + "&sortType=2"
             if exp_param:
                 search_url += f"&experience={exp_param}"
+            if scale_param:
+                search_url += f"&scale={scale_param}"
             if page > 1:
                 search_url += f"&page={page}"
 
@@ -300,16 +334,28 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
                 if not filter_job(job, cfg, max_exp):
                     filtered_count += 1
                     console.print(f"    [yellow]✗ 过滤: {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
+                    if on_progress:
+                        on_progress("job_result", {"status": "filtered", "company": job.get("company",""),
+                                   "title": job.get("title",""), "salary": job.get("salary",""),
+                                   "experience": job.get("experience",""), "education": job.get("education","")})
                     continue
 
                 all_jobs.append(job)
                 page_new += 1
                 console.print(f"    [green]✓ [{len(all_jobs)}] {job['salary']} | {job['experience']} | {job['education']}[/green]")
+                if on_progress:
+                    on_progress("job_result", {"status": "kept", "company": job.get("company",""),
+                               "title": job.get("title",""), "salary": job.get("salary",""),
+                               "experience": job.get("experience",""), "education": job.get("education","")})
 
             extra = ""
             if dup_count > 0:
                 extra += f", 重复 {dup_count}"
             console.print(f"  [bold]第{page}页: +{page_new} 保留[/bold] (过滤 {filtered_count}{extra}) [累计 {len(all_jobs)}]")
+            if on_progress:
+                on_progress("page_result", {"page": page, "page_jobs": len(jobs), "kept": page_new,
+                           "filtered": filtered_count, "dup": dup_count, "total_kept": len(all_jobs),
+                           "city": city, "keyword": keyword})
 
             # ── 更新组合计数 ──
             combo_count += page_new

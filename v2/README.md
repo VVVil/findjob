@@ -2,11 +2,12 @@
 
 BOSS直聘 + 智联招聘，爬岗位 → 硬过滤 → AI 评分 → 批量投递/发招呼语。
 
+**支持两种模式：CLI 命令行 + Web UI 界面。**
+
 ## 首次安装
 
 ```powershell
-cd D:\findjob\findjob_new
-python -m venv venv
+cd D:\findjob\findjob_new\v2
 .\venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -19,20 +20,68 @@ DEEPSEEK_API_KEY=sk-xxx
 
 ---
 
-## 启动 Chrome（每次开机一次）
+## Web UI 模式（推荐）
 
-启动 Chrome 调试模式，同时打开两个平台扫码登录：
+### 启动
 
 ```powershell
-taskkill /F /IM chrome.exe
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_debug_findjob" "https://www.zhipin.com" "https://www.zhaopin.com"
+# 1. 启动 BOSS Chrome
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_boss" "https://www.zhipin.com"
+
+# 2.（可选）启动智联 Chrome
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9223 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_zhilian" "https://www.zhaopin.com"
+
+# 3. 启动 Web 服务
+cd D:\findjob\findjob_new\v2
+.\venv\Scripts\activate
+python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-开好后在浏览器里扫码登录两个平台。
+浏览器打开 `http://localhost:8000`。
+
+### 界面操作
+
+```
+┌── 配置栏 ───────────────────────────────────────────┐
+│ 关键词标签 + 城市标签 + 经验/页数/薪资/规模/平台勾选    │
+│                                                      │
+│ [1.开始爬取] [2.AI评分] [3.生成招呼语] [4.统一发送]    │
+│                                    [⚡全自动] [🗑清空] │
+├── 实时进度 ──────────────────────────────────────────┤
+│ [████████░░░░] 评分中: 5/23 — 微品致远...            │
+│ 日志流...                                            │
+├── 岗位卡片列表 ───────────────────────────────────────┤
+│ ☐ 全选 (18个)                                       │
+│ ┌──────────────────────────────────────┐ 85分 ✓已发送│
+│ │ ☑ 微品致远  AI研发  20-30K  1-3年     │ BOSS      │
+│ │ [展开JD]  招呼语: ___________ [保存]   │           │
+│ └──────────────────────────────────────┘            │
+│ ┌──────────────────────────────────────┐ 45分(划掉) │
+│ │ ☐ 某外包   Python  8-12K             │ 智联       │
+│ └──────────────────────────────────────┘            │
+└──────────────────────────────────────────────────────┘
+```
+
+### 按钮逻辑
+
+| 阶段 | 可用按钮 |
+|------|---------|
+| 爬取完成 | AI评分、生成招呼语 都亮（可跳过评分直接生成） |
+| 评分完成 | 生成招呼语亮，卡片按分数排序，低分划掉沉底 |
+| 招呼语完成 | 统一发送亮，没招呼语的 BOSS 岗位划掉沉底 |
+| 发送完成 | 卡片右上角显示 ✓已发送 / ✗失败 |
+
+- **全自动**：一键爬→评→生成→发，等于 CLI 的 `-a`
+- **智联岗位**不需要招呼语，评分后直接勾选发送
+- **发送**只发勾选的岗位
+
+### 实时进度
+
+WebSocket 推送，前端实时显示：爬取当前页/城市/关键词、评分进度、招呼语生成进度、发送状态。跟 CLI 日志一样的详细程度。
 
 ---
 
-## 运行
+## CLI 模式
 
 //best_command
 python run.py -k "AI开发 Python Agent" -e 3 -c "深圳 广州" -p 1 -P all  
@@ -75,6 +124,8 @@ python run.py --json output\jobs_20260725_120000.json --score-min 70
 | `--salary-max` | 最高薪资 K | `--salary-max 20` |
 | `-d, --deal-breakers` | 屏蔽词，空格分隔 | `-d "外包 996"` |
 | `-r, --resume` | 简历路径，覆盖 config.yaml | `-r C:\resume\my.md` |
+| `--scale-min` | BOSS 公司最小规模（人数） | `--scale-min 20` |
+| `--scale-max` | BOSS 公司最大规模（人数） | `--scale-max 999` |
 | `-a, --auto` | 全自动模式：爬→评→生成→投递/发招呼语，零确认 | `-a` |
 | `--json` | 跳过爬虫，从已有 JSON 进入批阅发送 | `--json output\jobs_xxx.json` |
 | `--score-min` | AI 评分阈值，低于此分自动筛掉 | `--score-min 70` |
@@ -116,25 +167,26 @@ python run.py --json output\jobs_20260725_120000.json --score-min 70
 编辑 `config.yaml`：
 
 ```yaml
-resume_path: "../resume/resume.md"       # 简历路径，-r 可覆盖
+resume_path: "../../resume/resume.md"       # 简历路径，-r 可覆盖
 
 # 岗位过滤
 salary_min: 8                            # 最低薪资 K
-salary_max: 20                           # 最高薪资 K
+salary_max: 30                           # 最高薪资 K
 allowed_edu: ["本科", "大专"]             # 接受的学历，"学历不限"自动保留
-deal_breakers:                           # 屏蔽词：命中标题或公司名即过滤
+boss_scale: "302,303,304,305"            # BOSS 公司规模（301=0-20人 306=万人以上），留空=不过滤
+deal_breakers:                           # 屏蔽词：命中标题/公司名/JD 即过滤
   - "外包"
-  - "996"
   - "管培"
   - "单休"
   - "实习"
-  - "华为"
-  - "阿里"
+  - "培训"
 
 # 默认搜索（命令行参数会覆盖）
 search:
   keywords: ["Python", "AI", "Agent"]
   cities: ["深圳", "广州"]
+
+# BOSS 规模参数值: 301=0-20人, 302=20-99人, 303=100-499人, 304=500-999人, 305=1000-9999人, 306=10000人以上
 
 # DeepSeek API
 ai:
@@ -257,18 +309,22 @@ a=全部 / 1,3=选第1和第3 / q=跳过本轮
 
 ```
 findjob_new/v2/
+  app.py              # FastAPI 后端 + WebSocket 实时进度
+  static/
+    index.html        # Web UI 前端（单页，vanilla JS）
   run.py              # CLI 入口 + 批阅主流程（爬→评→发）
   chat_agent.py       # 聊天守护进程（轮询未读→AI回复→审核发送）
   browser.py          # CDP 直连 Chrome（WebSocket）
-  filters.py          # 硬过滤：经验/学历/薪资/屏蔽词
+  filters.py          # 硬过滤：经验/学历/薪资/屏蔽词 + JD 关键词
   ai.py               # DeepSeek：评分 + 招呼语生成
-  config.yaml         # 配置文件
+  config.yaml         # 配置文件（技术方向）
+  config_1.yaml       # 配置文件（电商/独立站方向）
   .env                # DEEPSEEK_API_KEY
   requirements.txt
   boss/               # BOSS 直聘
     __init__.py
-    scraper.py        #   列表+详情 JS 提取 + scrape()
-    sender.py         #   发招呼语 + 轻触模式
+    scraper.py        #   列表+详情 JS 提取 + scrape() + URL经验/规模参数
+    sender.py         #   发招呼语 + 轻触模式 + 限频弹窗处理
     chat.py           #   聊天操作：检测未读、读消息、发简历
   zhaopin/            # 智联招聘
     __init__.py

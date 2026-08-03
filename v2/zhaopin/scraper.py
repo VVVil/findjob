@@ -2,6 +2,8 @@
 智联招聘爬虫 — JS 提取脚本 + scrape()
 """
 
+from __future__ import annotations
+
 import json
 import random
 import time
@@ -144,12 +146,14 @@ JS_EXTRACT_DETAIL = """
 
 def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
            per_combo_pages: int, max_exp: int | None,
-           target_per_combo: int | None = None, max_pages: int = 20) -> list[dict]:
+           target_per_combo: int | None = None, max_pages: int = 20,
+           on_progress: callable | None = None) -> list[dict]:
     """爬智联岗位（列表+详情），返回过滤后的列表。browser 为 BrowserSession 实例。
 
     per_combo_pages: 每组合翻几页，0=不限（由 max_pages 兜底）
     target_per_combo: 每个城市×关键词组合找多少个，凑够即停。None=不限
     max_pages: 单组合绝对上限，防翻穿
+    on_progress: 可选回调，用于 Web 端实时进度
     """
     all_jobs = []
     seen_urls = set()
@@ -171,6 +175,8 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
     for idx, (city, city_code, keyword) in enumerate(combos, 1):
         console.print(f"[dim][{idx}/{total_combos}] 智联搜索: {city} / {keyword}[/dim]")
+        if on_progress:
+            on_progress("combo_start", {"idx": idx, "total": total_combos, "city": city, "keyword": keyword, "platform": "zhaopin"})
 
         page_limit = per_combo_pages if per_combo_pages > 0 else max_pages
         combo_count = 0
@@ -291,16 +297,30 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
                 if not filter_job(job, cfg, max_exp):
                     filtered_count += 1
                     console.print(f"    [yellow]✗ 过滤: {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
+                    if on_progress:
+                        on_progress("job_result", {"status": "filtered", "company": job.get("company",""),
+                                   "title": job.get("title",""), "salary": job.get("salary",""),
+                                   "experience": job.get("experience",""), "education": job.get("education",""),
+                                   "platform": "zhaopin"})
                     continue
 
                 all_jobs.append(job)
                 page_new += 1
                 console.print(f"    [green]✓ [{len(all_jobs)}] {job['salary']} | {job['experience']} | {job['education']}[/green]")
+                if on_progress:
+                    on_progress("job_result", {"status": "kept", "company": job.get("company",""),
+                               "title": job.get("title",""), "salary": job.get("salary",""),
+                               "experience": job.get("experience",""), "education": job.get("education",""),
+                               "platform": "zhaopin"})
 
             extra = ""
             if dup_count > 0:
                 extra += f", 重复 {dup_count}"
             console.print(f"  [bold]第{page}页: +{page_new} 保留[/bold] (过滤 {filtered_count}{extra}) [累计 {len(all_jobs)}]")
+            if on_progress:
+                on_progress("page_result", {"page": page, "page_jobs": len(card_jobs), "kept": page_new,
+                           "filtered": filtered_count, "dup": dup_count, "total_kept": len(all_jobs),
+                           "city": city, "keyword": keyword, "platform": "zhaopin"})
 
             # ── 更新组合计数 ──
             combo_count += page_new

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>findjob — 智能求职助手</title>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
+    --text: #e1e4ea; --dim: #8b8fa3; --green: #34d399; --red: #f87171;
+    --blue: #60a5fa; --yellow: #fbbf24; --accent: #818cf8;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+  .app { max-width: 1200px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 20px; margin-bottom: 16px; color: var(--accent); }
+  h1 span { color: var(--dim); font-weight: 400; font-size: 14px; }
+
+  /* ── Config Panel ── */
+  .config-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+  .config-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 10px; }
+  .config-row:last-child { margin-bottom: 0; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; color: var(--dim); }
+  .field input, .field select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: 13px; width: 120px; }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  .field input.wide { width: 180px; }
+
+  /* Tags */
+  .tag-input-wrap { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; min-width: 220px; min-height: 32px; }
+  .tag-input-wrap:focus-within { border-color: var(--accent); }
+  .tag { display: inline-flex; align-items: center; gap: 4px; background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
+  .tag .del { cursor: pointer; opacity: 0.7; }
+  .tag .del:hover { opacity: 1; }
+  .tag-input-wrap input { border: none; background: transparent; color: var(--text); font-size: 13px; outline: none; flex: 1; min-width: 60px; padding: 2px 4px; }
+
+  /* ── Action bar ── */
+  .action-bar { display: flex; gap: 10px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+  .btn { padding: 8px 20px; border: none; border-radius: var(--radius); font-size: 13px; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-success { background: var(--green); color: #000; }
+  .btn-danger { background: var(--red); color: #fff; }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-outline:hover { border-color: var(--accent); }
+
+  /* ── Progress ── */
+  .progress-bar-wrap { display: none; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; }
+  .progress-bar-wrap.active { display: block; }
+  .progress-label { font-size: 13px; margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .progress-track { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; width: 0%; }
+
+  /* ── Live log ── */
+  .live-log { display: none; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; max-height: 160px; overflow-y: auto; font-size: 12px; color: var(--dim); font-family: monospace; }
+  .live-log.active { display: block; }
+  .live-log .log-line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+
+  /* ── Summary ── */
+  .summary { display: none; margin-bottom: 12px; font-size: 13px; color: var(--dim); }
+  .summary.active { display: block; }
+
+  /* ── Job Cards ── */
+  .job-list { display: flex; flex-direction: column; gap: 8px; }
+  .job-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; transition: border-color 0.2s; position: relative; }
+  .job-card:hover { border-color: var(--accent); }
+  .job-card.removed { opacity: 0.5; text-decoration: line-through; }
+  .job-card-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
+  .job-card-header .check { flex-shrink: 0; width: 18px; height: 18px; }
+  .job-card-header .info { flex: 1; min-width: 0; }
+  .job-card-header .company { font-weight: 600; font-size: 14px; }
+  .job-card-header .title { font-size: 13px; color: var(--dim); margin-top: 2px; }
+  .job-card-header .meta { display: flex; gap: 12px; align-items: center; flex-shrink: 0; font-size: 12px; color: var(--dim); }
+  .job-card-header .meta .salary { color: var(--red); font-weight: 600; }
+
+  /* badges */
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge-score { background: var(--accent); color: #fff; }
+  .badge-ok { background: var(--green); color: #000; }
+  .badge-fail { background: var(--red); color: #fff; }
+  .badge-pending { background: var(--yellow); color: #000; }
+
+  /* expand */
+  .job-card-body { display: none; padding: 0 16px 16px 16px; border-top: 1px solid var(--border); }
+  .job-card.expanded .job-card-body { display: block; }
+  .job-card-body .jd { font-size: 12px; color: var(--dim); white-space: pre-wrap; max-height: 200px; overflow-y: auto; margin-bottom: 10px; line-height: 1.6; }
+  .job-card-body .greeting-row { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; }
+  .job-card-body textarea { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px; border-radius: 4px; font-size: 12px; resize: vertical; min-height: 60px; }
+  .job-card-body textarea:focus { outline: none; border-color: var(--accent); }
+  .job-card-body .greeting-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
+
+  .status-badge { position: absolute; top: 8px; right: 12px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>⚡ findjob <span>智能求职助手</span></h1>
+
+  <!-- Config -->
+  <div class="config-panel">
+    <div class="config-row">
+      <div class="field">
+        <label>关键词 (回车添加)</label>
+        <div class="tag-input-wrap" id="kw-tags">
+          <input id="kw-input" placeholder="Python">
+        </div>
+      </div>
+      <div class="field">
+        <label>城市 (回车添加)</label>
+        <div class="tag-input-wrap" id="city-tags">
+          <input id="city-input" placeholder="深圳">
+        </div>
+      </div>
+      <div class="field"><label>经验 ≤ 年</label><select id="exp"><option value="">不限</option><option value="0">应届</option><option value="1">1年</option><option value="3" selected>3年</option><option value="5">5年</option><option value="10">10年</option></select></div>
+      <div class="field"><label>平台</label><div style="display:flex;gap:8px;align-items:center;height:32px;font-size:13px;"><label style="color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="plat-boss" checked> BOSS</label><label style="color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="plat-zhaopin"> 智联</label></div></div>
+      <div class="field"><label>爬取页数</label><input id="pages" type="number" value="3" min="1" max="20"></div>
+    </div>
+    <div class="config-row">
+      <div class="field"><label>薪资下限 K</label><input id="salary-min" type="number" value="6" min="0"></div>
+      <div class="field"><label>薪资上限 K</label><input id="salary-max" type="number" value="30" min="0"></div>
+      <div class="field"><label>公司规模 最少人</label><input id="scale-min" type="number" value="20" min="0"></div>
+      <div class="field"><label>公司规模 最多人</label><input id="scale-max" type="number" value="9999" min="0"></div>
+      <div class="field"><label>AI评分阈值</label><input id="score-threshold" type="number" value="60" min="0" max="100"></div>
+    </div>
+  </div>
+
+  <!-- Action buttons -->
+  <div class="action-bar">
+    <button class="btn btn-primary" id="btn-scrape" onclick="startScrape()">1. 开始爬取</button>
+    <button class="btn btn-outline" id="btn-score" onclick="startScore()" disabled>2. AI 评分</button>
+    <button class="btn btn-outline" id="btn-generate" onclick="startGenerate()" disabled>3. 统一生成招呼语</button>
+    <button class="btn btn-success" id="btn-send" onclick="startSend()" disabled>4. 统一发送</button>
+    <span style="flex:1"></span>
+    <button class="btn btn-outline" style="background:var(--accent);color:#fff;padding:8px 16px;" onclick="startAuto()" id="btn-auto">⚡ 全自动</button>
+    <button class="btn btn-outline" onclick="clearAll()">🗑 清空</button>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-bar-wrap" id="progress-wrap">
+    <div class="progress-label"><span id="progress-label">就绪</span><span id="progress-pct"></span></div>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+  </div>
+  <div class="live-log" id="live-log"></div>
+
+  <!-- Summary -->
+  <div class="summary" id="summary"></div>
+
+  <!-- Job list -->
+  <div class="job-list" id="job-list"></div>
+</div>
+
+<script>
+// ── Tag inputs ──────────────────────────────────
+function setupTags(wrapId, inputId) {
+  const wrap = document.getElementById(wrapId);
+  const input = document.getElementById(inputId);
+  const getTags = () => [...wrap.querySelectorAll('.tag')].map(t => t.dataset.value);
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && input.value.trim()) {
+      e.preventDefault();
+      addTag(wrap, input, input.value.trim());
+      input.value = '';
+    }
+  });
+
+  wrap.addEventListener('click', e => {
+    if (e.target.classList.contains('del')) {
+      e.target.closest('.tag').remove();
+    }
+    input.focus();
+  });
+
+  wrap.querySelectorAll('.tag .del').forEach(d => {
+    d.onclick = e => { e.target.closest('.tag').remove(); input.focus(); };
+  });
+
+  return {
+    getTags,
+    add: (v) => addTag(wrap, input, v),
+    set: (vals) => { wrap.querySelectorAll('.tag').forEach(t => t.remove()); vals.forEach(v => addTag(wrap, input, v)); }
+  };
+}
+
+function addTag(wrap, input, value) {
+  const tag = document.createElement('span');
+  tag.className = 'tag';
+  tag.dataset.value = value;
+  tag.innerHTML = `${value}<span class="del">×</span>`;
+  wrap.insertBefore(tag, input);
+}
+
+const kwInput = setupTags('kw-tags', 'kw-input');
+const cityInput = setupTags('city-tags', 'city-input');
+
+// Defaults
+kwInput.set(['AI开发', 'Python', 'Agent']);
+cityInput.set(['深圳', '广州']);
+
+// ── WebSocket ──────────────────────────────────
+let ws;
+function connectWS() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => {
+    const { type, data } = JSON.parse(e.data);
+    handleEvent(type, data);
+  };
+  ws.onclose = () => setTimeout(connectWS, 2000);
+}
+connectWS();
+
+// ── State ──────────────────────────────────────
+let jobs = [];
+let stage = 'idle'; // idle | scraping | scored | generated | sending | done
+let autoMode = false;
+
+function handleEvent(type, data) {
+  const log = document.getElementById('live-log');
+  const progress = document.getElementById('progress-wrap');
+  const fill = document.getElementById('progress-fill');
+  const label = document.getElementById('progress-label');
+  const pct = document.getElementById('progress-pct');
+
+  switch(type) {
+    case 'combo_start':
+      progress.classList.add('active');
+      document.getElementById('live-log').classList.add('active');
+      label.textContent = `[${data.idx}/${data.total}] ${data.city} / ${data.keyword}`;
+      break;
+
+    case 'page_result':
+      label.textContent = `第${data.page}页: +${data.kept}保留 (过滤${data.filtered}) [累计${data.total_kept}]`;
+      addLog(`第${data.page}页: ${data.page_jobs}卡片 → +${data.kept} | 过滤${data.filtered} | 累计${data.total_kept}`);
+      break;
+
+    case 'job_result':
+      if (data.status === 'kept') {
+        addLog(`✓ ${data.company} - ${data.title} | ${data.salary}`);
+      }
+      break;
+
+    case 'scrape_done':
+      stage = 'scraped';
+      label.textContent = `爬取完成，共 ${data.total} 个岗位`;
+      fill.style.width = '100%';
+      pct.textContent = '100%';
+      loadJobs();
+      document.getElementById('btn-score').disabled = false;
+      document.getElementById('btn-score').classList.replace('btn-outline', 'btn-primary');
+      document.getElementById('btn-generate').disabled = false;
+      document.getElementById('btn-generate').classList.replace('btn-outline', 'btn-primary');
+      if (autoMode) { jobs.forEach(j => j._checked = true); setTimeout(startScore, 500); }
+      break;
+
+    case 'scoring':
+      label.textContent = `评分中: ${data.progress} — ${data.company}...`;
+      fill.style.width = (parseInt(data.progress) / jobs.length * 100) + '%';
+      pct.textContent = data.progress;
+      addLog(`评分: ${data.company} - ${data.title}`);
+      break;
+
+    case 'scoring_done':
+      stage = 'scored';
+      label.textContent = `评分完成: ${data.kept} 保留, ${data.removed} 移除`;
+      fill.style.width = '100%';
+      pct.textContent = '100%';
+      document.getElementById('btn-score').disabled = true;
+      loadJobs();
+      if (autoMode) { jobs.forEach(j => { if (j._scored !== false) j._checked = true; }); setTimeout(startGenerate, 500); }
+      break;
+
+    case 'generating':
+      label.textContent = `生成招呼语: ${data.progress} — ${data.company}...`;
+      break;
+
+    case 'greeting_result':
+      addLog(`${data.ok ? '✓' : '✗'} 招呼语: ${data.url.split('/').pop()}`);
+      break;
+
+    case 'generate_done':
+      stage = 'generated';
+      label.textContent = `招呼语生成完成`;
+      fill.style.width = '100%';
+      pct.textContent = '100%';
+      document.getElementById('btn-score').disabled = true;
+      document.getElementById('btn-generate').disabled = true;
+      loadJobs();
+      document.getElementById('btn-send').disabled = false;
+      document.getElementById('btn-send').classList.replace('btn-outline', 'btn-success');
+      if (autoMode) { jobs.forEach(j => { if (j._scored !== false) j._checked = true; }); setTimeout(startSend, 500); }
+      break;
+
+    case 'send_done':
+      stage = 'done';
+      label.textContent = `发送完成`;
+      fill.style.width = '100%';
+      autoMode = false;
+      document.getElementById('btn-auto').disabled = false;
+      loadJobs();
+      break;
+      label.textContent = `发送中: ${data.progress} — ${data.company}...`;
+      break;
+
+    case 'send_result':
+      addLog(`${data.ok ? '✓' : '✗'} ${data.url.split('/').pop()} ${data.ok ? '发送成功' : data.error}`);
+      loadJobs();  // refresh status badges
+      break;
+
+    case 'log':
+      addLog(data.msg);
+      break;
+
+    case 'error':
+      addLog(`❌ ${data.stage ? '['+data.stage+'] ' : ''}${data.message}`, true);
+      if (data.trace) console.error(data.trace);
+      break;
+  }
+}
+
+function addLog(msg, isError) {
+  const log = document.getElementById('live-log');
+  log.classList.add('active');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.textContent = new Date().toLocaleTimeString() + '  ' + msg;
+  if (isError) line.style.color = 'var(--red)';
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── API calls ──────────────────────────────────
+async function startScrape() {
+  const keywords = kwInput.getTags().join(' ');
+  const cities = cityInput.getTags().join(' ');
+  if (!keywords || !cities) return alert('请填写关键词和城市');
+
+  document.getElementById('btn-scrape').disabled = true;
+  document.getElementById('live-log').innerHTML = '';
+  document.getElementById('live-log').classList.add('active');
+  document.getElementById('progress-wrap').classList.add('active');
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('progress-label').textContent = '启动爬取...';
+
+  const expVal = document.getElementById('exp').value;
+  const platforms = [];
+  if (document.getElementById('plat-boss').checked) platforms.push('boss');
+  if (document.getElementById('plat-zhaopin').checked) platforms.push('zhaopin');
+
+  const params = {
+    keywords, cities, platforms,
+    pages: parseInt(document.getElementById('pages').value) || 2,
+    max_exp: expVal ? parseInt(expVal) : null,
+    salary_min: parseInt(document.getElementById('salary-min').value) || null,
+    salary_max: parseInt(document.getElementById('salary-max').value) || null,
+    scale_min: parseInt(document.getElementById('scale-min').value) || null,
+    scale_max: parseInt(document.getElementById('scale-max').value) || null,
+  };
+
+  await fetch('/api/scrape', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
+}
+
+async function startScore() {
+  document.getElementById('btn-score').disabled = true;
+  // 生成招呼语保持可用（可以跳过评分直接生成）
+  await fetch('/api/score', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ score_threshold: parseInt(document.getElementById('score-threshold').value) || 60 })
+  });
+}
+
+async function startGenerate() {
+  document.getElementById('btn-score').disabled = true;  // 生成后不能再评分
+  document.getElementById('btn-generate').disabled = true;
+  document.getElementById('live-log').innerHTML = '';
+  const urls = jobs.filter(j => j._checked && j._scored !== false).map(j => j.url);
+  await fetch('/api/generate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls })
+  });
+}
+
+async function startSend() {
+  document.getElementById('btn-send').disabled = true;
+  document.getElementById('live-log').innerHTML = '';
+  await fetch('/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+}
+
+function startAuto() {
+  autoMode = true;
+  document.getElementById('btn-auto').disabled = true;
+  document.getElementById('live-log').innerHTML = '';
+  document.getElementById('live-log').classList.add('active');
+  addLog('⚡ 全自动模式：爬取 → 评分 → 生成 → 发送');
+  startScrape();
+}
+
+function clearAll() {
+  jobs = [];
+  stage = 'idle';
+  autoMode = false;
+  document.getElementById('job-list').innerHTML = '';
+  document.getElementById('summary').classList.remove('active');
+  document.getElementById('live-log').innerHTML = '';
+  document.getElementById('live-log').classList.remove('active');
+  document.getElementById('progress-wrap').classList.remove('active');
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('progress-label').textContent = '';
+  document.querySelectorAll('.action-bar .btn').forEach(b => {
+    b.disabled = true;
+    b.classList.add('btn-outline');
+    b.classList.remove('btn-primary', 'btn-success');
+  });
+  document.getElementById('btn-scrape').disabled = false;
+  document.getElementById('btn-scrape').classList.replace('btn-outline', 'btn-primary');
+  document.getElementById('btn-auto').disabled = false;
+}
+
+// ── Job list render ────────────────────────────
+async function loadJobs() {
+  const resp = await fetch('/api/jobs');
+  const data = await resp.json();
+  jobs = data.jobs;
+  renderJobs();
+  updateSummary();
+}
+
+function renderJobs() {
+  const list = document.getElementById('job-list');
+
+  // 排序：按分数降序，划掉的沉底
+  const sorted = [...jobs].sort((a, b) => {
+    const aBad = a._scored === false || (a.platform !== 'zhaopin' && !a._greeting && (stage === 'generated' || stage === 'sending' || stage === 'done'));
+    const bBad = b._scored === false || (b.platform !== 'zhaopin' && !b._greeting && (stage === 'generated' || stage === 'sending' || stage === 'done'));
+    if (aBad !== bBad) return aBad ? 1 : -1;
+    return (b._score || 0) - (a._score || 0);
+  });
+
+  // 全选框
+  const activeJobs = sorted.filter(j => !(j._scored === false || (j.platform !== 'zhaopin' && !j._greeting && (stage === 'generated' || stage === 'sending' || stage === 'done'))));
+  const allChecked = activeJobs.length > 0 && activeJobs.every(j => j._checked);
+
+  let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px;">
+    <label style="cursor:pointer;color:var(--dim);display:flex;align-items:center;gap:4px;">
+      <input type="checkbox" onchange="toggleAll(this.checked)" ${allChecked ? 'checked' : ''} style="width:16px;height:16px;"> 全选 (${activeJobs.length}个)
+    </label>
+  </div>`;
+
+  html += sorted.map((j, idx) => {
+    const realIdx = jobs.indexOf(j);
+    const expanded = j._expanded ? ' expanded' : '';
+    const scoredOut = j._scored === false;
+    // 智联不需要招呼语，只有 BOSS 没招呼语才算划掉
+    const noGreeting = j.platform !== 'zhaopin' && (stage === 'generated' || stage === 'sending' || stage === 'done') && !j._greeting;
+    const removed = (scoredOut || noGreeting) ? ' removed' : '';
+    const scoreHtml = j._score ? `<span class="badge badge-score">${j._score}分</span>` : '';
+
+    const platformLabel = j.platform === 'zhaopin' ? '智联' : 'BOSS';
+    const platformBadge = `<span class="badge" style="background:var(--border);color:var(--dim);">${platformLabel}</span>`;
+
+    let statusBadge = '';
+    if (j._send_status === 'ok') statusBadge = '<span class="badge badge-ok status-badge">✓ 已发送</span>';
+    else if (j._send_status === 'failed') statusBadge = `<span class="badge badge-fail status-badge" title="${(j._send_error||'').replace(/"/g,'&quot;')}">✗ 失败</span>`;
+    else if (j._greeting && j._greeting.length > 0) statusBadge = '<span class="badge badge-pending status-badge">待发送</span>';
+
+    const disabledCheck = scoredOut ? 'disabled' : '';
+
+    return `
+    <div class="job-card${expanded}${removed}" id="job-${realIdx}">
+      ${statusBadge}
+      <div class="job-card-header" onclick="toggleJob(${realIdx})">
+        <input type="checkbox" class="check" ${j._checked ? 'checked' : ''} ${disabledCheck} onclick="event.stopPropagation(); toggleCheck(${realIdx})">
+        <div class="info">
+          <div class="company">${esc(j.company)}</div>
+          <div class="title">${esc(j.title)}</div>
+        </div>
+        <div class="meta">
+          <span class="salary">${esc(j.salary)}</span>
+          ${platformBadge}
+          <span>${esc(j.experience)}</span>
+          <span>${esc(j.education)}</span>
+          ${scoreHtml}
+        </div>
+      </div>
+      <div class="job-card-body">
+        <div class="jd">${esc(j.jd || '无 JD')}</div>
+        <a href="${esc(j.url)}" target="_blank" style="font-size:12px;color:var(--accent);">在原站打开 →</a>
+        <div class="greeting-row" style="${j._greeting !== undefined ? '' : 'display:none'}">
+          <textarea id="greeting-${realIdx}" oninput="updateGreeting(${realIdx})">${esc(j._greeting || '')}</textarea>
+          <div class="greeting-actions">
+            <button class="btn btn-outline" style="font-size:11px;padding:4px 10px;" onclick="saveGreeting(${realIdx})">保存</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  list.innerHTML = html;
+}
+
+function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+function toggleAll(checked) {
+  jobs.forEach(j => {
+    // 评分划掉的不可选，BOSS没招呼语的不可选（generated之后），智联没限制
+    const bad = j._scored === false || (j.platform !== 'zhaopin' && !j._greeting && (stage === 'generated' || stage === 'sending' || stage === 'done'));
+    if (!bad) j._checked = checked;
+  });
+  renderJobs();
+}
+
+function toggleJob(i) {
+  jobs[i]._expanded = !jobs[i]._expanded;
+  renderJobs();
+}
+
+function toggleCheck(i) {
+  jobs[i]._checked = !jobs[i]._checked;
+  renderJobs();
+}
+
+async function updateGreeting(i) {
+  const ta = document.getElementById('greeting-'+i);
+  if (ta) jobs[i]._greeting = ta.value;
+}
+
+async function saveGreeting(i) {
+  const ta = document.getElementById('greeting-'+i);
+  const greeting = ta ? ta.value : jobs[i]._greeting;
+  await fetch('/api/update-greeting', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: jobs[i].url, greeting })
+  });
+  addLog(`招呼语已保存: ${jobs[i].company}`);
+}
+
+function updateSummary() {
+  const el = document.getElementById('summary');
+  const total = jobs.length;
+  const scored = jobs.filter(j => j._scored !== false).length;
+  const withGreeting = jobs.filter(j => j._greeting && j._greeting.length > 0).length;
+  const sent = jobs.filter(j => j._send_status === 'ok').length;
+  const failed = jobs.filter(j => j._send_status === 'failed').length;
+
+  if (total === 0) { el.classList.remove('active'); return; }
+  el.classList.add('active');
+  let parts = [`共 ${total} 个岗位`];
+  if (scored < total) parts.push(`${scored} 评分通过`);
+  if (withGreeting) parts.push(`${withGreeting} 有招呼语`);
+  if (sent) parts.push(`${sent} 发送成功`);
+  if (failed) parts.push(`${failed} 失败`);
+  el.textContent = parts.join(' · ');
+}
+</script>
+</body>
+</html>

@@ -106,9 +106,11 @@ def filter_job(job: dict, cfg: dict, max_exp: int | None) -> bool:
     experience = job.get("experience", "")
     education = job.get("education", "")
 
-    # Deal breakers — 标题 & 公司名
+    # Deal breakers — 标题 & 公司名 & JD
+    jd = job.get("jd", "")
     for kw in cfg.get("deal_breakers", []):
-        if kw.lower() in title.lower() or kw.lower() in company.lower():
+        target = f"{title} {company} {jd}".lower()
+        if kw.lower() in target:
             return False
 
     # 薪资下限
