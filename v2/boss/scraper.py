@@ -282,7 +282,8 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
                 # 先用列表数据做初步过滤
                 combined = {**job_data}
-                if not filter_job(combined, cfg, max_exp):
+                keep, reason = filter_job(combined, cfg, max_exp)
+                if not keep:
                     filtered_count += 1
                     continue
 
@@ -331,9 +332,10 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
                 }
 
                 # 用详情数据再过滤一次
-                if not filter_job(job, cfg, max_exp):
+                keep, reason = filter_job(job, cfg, max_exp)
+                if not keep:
                     filtered_count += 1
-                    console.print(f"    [yellow]✗ 过滤: {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
+                    console.print(f"    [yellow]✗ 过滤({reason}): {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
                     if on_progress:
                         on_progress("job_result", {"status": "filtered", "company": job.get("company",""),
                                    "title": job.get("title",""), "salary": job.get("salary",""),

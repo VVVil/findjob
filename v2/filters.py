@@ -98,8 +98,8 @@ def _parse_salary_min_k(salary: str) -> float | None:
     return lo
 
 
-def filter_job(job: dict, cfg: dict, max_exp: int | None) -> bool:
-    """True = 保留"""
+def filter_job(job: dict, cfg: dict, max_exp: int | None) -> tuple[bool, str]:
+    """返回 (保留?, 原因)。True = 保留，原因仅在被过滤时有意义"""
     title = job.get("title", "")
     company = job.get("company", "")
     salary = job.get("salary", "")
@@ -111,20 +111,20 @@ def filter_job(job: dict, cfg: dict, max_exp: int | None) -> bool:
     for kw in cfg.get("deal_breakers", []):
         target = f"{title} {company} {jd}".lower()
         if kw.lower() in target:
-            return False
+            return False, f"屏蔽词: {kw}"
 
     # 薪资下限
     smin = cfg.get("salary_min", 0)
     smax_k = _parse_salary_max_k(salary)
     if smin > 0 and smax_k is not None and smax_k < smin:
-        return False
+        return False, f"薪资上限{smax_k}K < 最低要求{smin}K"
 
     # 薪资上限：只过滤完全无交集的（底薪 > salary_max）
     smax_limit = cfg.get("salary_max", 0)
     if smax_limit > 0 and smax_k is not None:
         smin_k = _parse_salary_min_k(salary)
         if smin_k is not None and smin_k > smax_limit:
-            return False
+            return False, f"薪资下限{smin_k}K > 上限{smax_limit}K"
 
     # 经验过滤
     exp_max_years = parse_experience_max(experience)
@@ -132,13 +132,13 @@ def filter_job(job: dict, cfg: dict, max_exp: int | None) -> bool:
         if max_exp == 0:
             # -e 0: 只要应届
             if exp_max_years != 0:
-                return False
+                return False, f"经验要求{experience}(非应届)，只要应届"
         else:
             # -e 3: ≤3年，但排除应届
             if exp_max_years == 0:
-                return False  # 排除应届
+                return False, f"经验要求{experience}(应届)，已排除应届"
             if exp_max_years is not None and exp_max_years > max_exp:
-                return False
+                return False, f"经验要求{experience} > 上限{max_exp}年"
 
     # 学历过滤（从 education 字段提取）
     edu = education or ""
@@ -148,6 +148,6 @@ def filter_job(job: dict, cfg: dict, max_exp: int | None) -> bool:
         if not edu_matched:
             parsed = parse_degree(edu)
             if parsed and parsed not in allowed and parsed not in ["学历不限", "不限"]:
-                return False
+                return False, f"学历{edu}不在允许列表{allowed}"
 
-    return True
+    return True, ""

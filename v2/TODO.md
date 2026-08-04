@@ -88,3 +88,8 @@ hunter/
 taskkill /F /IM chrome.exe
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="$env:TEMP\chrome_debug_bh" "https://www.zhipin.com"
 ```
+
+## 20260804
+改排版
+ai评分流程前端显示
+去ai味

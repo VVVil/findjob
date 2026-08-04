@@ -6,122 +6,275 @@
 <title>findjob — 智能求职助手</title>
 <style>
   :root {
-    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3a;
-    --text: #e1e4ea; --dim: #8b8fa3; --green: #34d399; --red: #f87171;
-    --blue: #60a5fa; --yellow: #fbbf24; --accent: #818cf8;
+    --bg: #F8FAFC;
+    --surface: #FFFFFF;
+    --border: #E2E8F0;
+    --text: #1E293B;
+    --text-dim: #64748B;
+    --primary: #1E40AF;
+    --primary-hover: #1E3A8A;
+    --accent: #D97706;
+    --accent-hover: #B45309;
+    --green: #16A34A;
+    --red: #DC2626;
     --radius: 8px;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+    --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
   }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-  .app { max-width: 1200px; margin: 0 auto; padding: 20px; }
-  h1 { font-size: 20px; margin-bottom: 16px; color: var(--accent); }
-  h1 span { color: var(--dim); font-weight: 400; font-size: 14px; }
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .app { max-width: 1280px; margin: 0 auto; padding: 24px 24px 48px; }
+
+  /* ── Header ── */
+  .header { margin-bottom: 20px; }
+  .header h1 { font-size: 18px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+  .header h1 .sub { color: var(--text-dim); font-weight: 400; font-size: 14px; margin-left: 8px; }
 
   /* ── Config Panel ── */
-  .config-panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
-  .config-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 10px; }
-  .config-row:last-child { margin-bottom: 0; }
-  .field { display: flex; flex-direction: column; gap: 4px; }
-  .field label { font-size: 12px; color: var(--dim); }
-  .field input, .field select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: 13px; width: 120px; }
-  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
-  .field input.wide { width: 180px; }
+  .config-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .config-section { padding: 20px 24px; }
+  .config-section + .config-section { border-top: 1px solid var(--border); }
+  .config-section.filter-section { background: #F8FAFC; }
+  .section-title {
+    font-size: 11px; font-weight: 600; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 14px;
+  }
 
-  /* Tags */
-  .tag-input-wrap { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 4px 6px; min-width: 220px; min-height: 32px; }
-  .tag-input-wrap:focus-within { border-color: var(--accent); }
-  .tag { display: inline-flex; align-items: center; gap: 4px; background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
-  .tag .del { cursor: pointer; opacity: 0.7; }
+  .config-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px 20px;
+    align-items: end;
+  }
+
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field-wide { grid-column: 1 / -1; }
+  .field label {
+    font-size: 13px; font-weight: 500; color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .field input, .field select {
+    width: 100%; height: 40px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0 12px;
+    font-size: 14px; color: var(--text);
+    font-family: var(--font);
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .field input:focus, .field select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.1);
+  }
+  .field input[type="number"] { -moz-appearance: textfield; }
+  .field input[type="number"]::-webkit-outer-spin-button,
+  .field input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  /* Tag inputs */
+  .tag-input-wrap {
+    display: flex; flex-wrap: wrap;
+    gap: 6px; align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    min-height: 44px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .tag-input-wrap:focus-within {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.1);
+  }
+  .tag {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--primary); color: #fff;
+    padding: 4px 10px; border-radius: 4px;
+    font-size: 13px; font-weight: 500; white-space: nowrap;
+  }
+  .tag .del { cursor: pointer; opacity: 0.7; font-size: 15px; line-height: 1; }
   .tag .del:hover { opacity: 1; }
-  .tag-input-wrap input { border: none; background: transparent; color: var(--text); font-size: 13px; outline: none; flex: 1; min-width: 60px; padding: 2px 4px; }
+  .tag-input-wrap input {
+    border: none !important; background: transparent !important;
+    color: var(--text); font-size: 14px; outline: none;
+    flex: 1; min-width: 80px; height: auto !important;
+    padding: 4px !important; box-shadow: none !important;
+  }
+
+  /* Checkbox group */
+  .checkbox-group { display: flex; gap: 16px; align-items: center; height: 40px; }
+  .checkbox-group label {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 14px; color: var(--text); cursor: pointer; font-weight: 400;
+  }
+  .checkbox-group input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
+
+  /* Filter row — inline compact */
+  .filter-row {
+    display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: end;
+  }
+  .filter-row .field { flex: 0 0 auto; }
+  .filter-row .field input { width: 90px; }
+  .filter-sep { color: var(--text-dim); font-size: 14px; padding-bottom: 10px; }
 
   /* ── Action bar ── */
-  .action-bar { display: flex; gap: 10px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
-  .btn { padding: 8px 20px; border: none; border-radius: var(--radius); font-size: 13px; cursor: pointer; font-weight: 600; transition: opacity 0.2s; }
-  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-success { background: var(--green); color: #000; }
+  .action-bar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 8px 18px; border: none; border-radius: 6px;
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    font-family: var(--font);
+    transition: all 0.15s; white-space: nowrap;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+  .btn-accent { background: var(--accent); color: #fff; }
+  .btn-accent:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-success { background: var(--green); color: #fff; }
+  .btn-success:hover:not(:disabled) { background: #15803D; }
   .btn-danger { background: var(--red); color: #fff; }
+  .btn-danger:hover:not(:disabled) { background: #B91C1C; }
   .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
-  .btn-outline:hover { border-color: var(--accent); }
+  .btn-outline:hover:not(:disabled) { background: var(--bg); border-color: #CBD5E1; }
+
+  .action-bar .spacer { flex: 1; }
 
   /* ── Progress ── */
-  .progress-bar-wrap { display: none; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; }
+  .progress-bar-wrap { display: none; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); padding: 12px 20px; }
   .progress-bar-wrap.active { display: block; }
-  .progress-label { font-size: 13px; margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .progress-label { font-size: 13px; margin-bottom: 8px; display: flex; justify-content: space-between; color: var(--text); }
   .progress-track { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
-  .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width 0.3s; width: 0%; }
+  .progress-fill { height: 100%; background: var(--primary); border-radius: 2px; transition: width 0.3s; width: 0%; }
 
   /* ── Live log ── */
-  .live-log { display: none; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; max-height: 160px; overflow-y: auto; font-size: 12px; color: var(--dim); font-family: monospace; }
+  .live-log { display: none; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); padding: 10px 20px; max-height: 160px; overflow-y: auto; font-size: 12px; color: var(--text-dim); font-family: var(--font-mono); }
   .live-log.active { display: block; }
-  .live-log .log-line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .live-log .log-line { padding: 2px 0; border-bottom: 1px solid rgba(0,0,0,0.03); }
 
   /* ── Summary ── */
-  .summary { display: none; margin-bottom: 12px; font-size: 13px; color: var(--dim); }
+  .summary { display: none; margin-bottom: 16px; font-size: 13px; color: var(--text-dim); }
   .summary.active { display: block; }
 
   /* ── Job Cards ── */
-  .job-list { display: flex; flex-direction: column; gap: 8px; }
-  .job-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; transition: border-color 0.2s; position: relative; }
-  .job-card:hover { border-color: var(--accent); }
-  .job-card.removed { opacity: 0.5; text-decoration: line-through; }
-  .job-card-header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; }
-  .job-card-header .check { flex-shrink: 0; width: 18px; height: 18px; }
+  .job-list { display: flex; flex-direction: column; gap: 10px; }
+  .job-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s; position: relative; }
+  .job-card:hover { border-color: #CBD5E1; box-shadow: var(--shadow); }
+  .job-card.removed { opacity: 0.45; }
+  .job-card.removed .job-card-header { text-decoration: line-through; text-decoration-color: var(--text-dim); }
+  .job-card-header { display: flex; align-items: center; gap: 14px; padding: 14px 20px; cursor: pointer; }
+  .job-card-header .check { flex-shrink: 0; width: 18px; height: 18px; accent-color: var(--primary); cursor: pointer; }
   .job-card-header .info { flex: 1; min-width: 0; }
-  .job-card-header .company { font-weight: 600; font-size: 14px; }
-  .job-card-header .title { font-size: 13px; color: var(--dim); margin-top: 2px; }
-  .job-card-header .meta { display: flex; gap: 12px; align-items: center; flex-shrink: 0; font-size: 12px; color: var(--dim); }
-  .job-card-header .meta .salary { color: var(--red); font-weight: 600; }
+  .job-card-header .company { font-weight: 600; font-size: 15px; color: var(--text); }
+  .job-card-header .title { font-size: 13px; color: var(--text-dim); margin-top: 3px; }
+  .job-card-header .meta { display: flex; gap: 14px; align-items: center; flex-shrink: 0; font-size: 12px; color: var(--text-dim); }
+  .job-card-header .meta .salary { color: var(--green); font-weight: 600; font-size: 13px; }
 
-  /* badges */
-  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
-  .badge-score { background: var(--accent); color: #fff; }
-  .badge-ok { background: var(--green); color: #000; }
+  /* Badges */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .badge-score { background: var(--primary); color: #fff; }
+  .badge-ok { background: var(--green); color: #fff; }
   .badge-fail { background: var(--red); color: #fff; }
-  .badge-pending { background: var(--yellow); color: #000; }
+  .badge-pending { background: #FEF3C7; color: #92400E; }
 
-  /* expand */
-  .job-card-body { display: none; padding: 0 16px 16px 16px; border-top: 1px solid var(--border); }
+  /* Expand */
+  .job-card-body { display: none; padding: 0 20px 16px 20px; border-top: 1px solid var(--border); }
   .job-card.expanded .job-card-body { display: block; }
-  .job-card-body .jd { font-size: 12px; color: var(--dim); white-space: pre-wrap; max-height: 200px; overflow-y: auto; margin-bottom: 10px; line-height: 1.6; }
-  .job-card-body .greeting-row { display: flex; gap: 8px; align-items: flex-start; margin-top: 8px; }
-  .job-card-body textarea { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px; border-radius: 4px; font-size: 12px; resize: vertical; min-height: 60px; }
-  .job-card-body textarea:focus { outline: none; border-color: var(--accent); }
+  .job-card-body .jd { font-size: 13px; color: var(--text-dim); white-space: pre-wrap; max-height: 200px; overflow-y: auto; margin-bottom: 12px; line-height: 1.7; }
+  .job-card-body .greeting-row { display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; }
+  .job-card-body textarea { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 10px; border-radius: 6px; font-size: 13px; resize: vertical; min-height: 60px; font-family: var(--font); }
+  .job-card-body textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(30,64,175,0.08); }
   .job-card-body .greeting-actions { display: flex; flex-direction: column; gap: 4px; flex-shrink: 0; }
 
-  .status-badge { position: absolute; top: 8px; right: 12px; font-size: 11px; }
+  .status-badge { position: absolute; top: 10px; right: 16px; font-size: 11px; }
+
+  /* ── 全选栏 ── */
+  .select-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; color: var(--text-dim); }
+  .select-bar label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .select-bar input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
 </style>
 </head>
 <body>
 <div class="app">
-  <h1>⚡ findjob <span>智能求职助手</span></h1>
+  <!-- Header -->
+  <div class="header">
+    <h1>findjob <span class="sub">智能求职助手</span></h1>
+  </div>
 
-  <!-- Config -->
+  <!-- Config Panel -->
   <div class="config-panel">
-    <div class="config-row">
-      <div class="field">
-        <label>关键词 (回车添加)</label>
-        <div class="tag-input-wrap" id="kw-tags">
-          <input id="kw-input" placeholder="Python">
+    <!-- Search section -->
+    <div class="config-section">
+      <div class="section-title">搜索条件</div>
+      <div class="config-fields">
+        <div class="field field-wide">
+          <label>关键词</label>
+          <div class="tag-input-wrap" id="kw-tags">
+            <input id="kw-input" placeholder="输入关键词后回车添加">
+          </div>
+        </div>
+        <div class="field field-wide">
+          <label>城市</label>
+          <div class="tag-input-wrap" id="city-tags">
+            <input id="city-input" placeholder="输入城市后回车添加">
+          </div>
+        </div>
+        <div class="field">
+          <label>经验要求</label>
+          <select id="exp">
+            <option value="">不限</option>
+            <option value="0">应届</option>
+            <option value="1">≤ 1年</option>
+            <option value="3" selected>≤ 3年</option>
+            <option value="5">≤ 5年</option>
+            <option value="10">≤ 10年</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>每关键词页数</label>
+          <input id="pages" type="number" value="3" min="1" max="20">
+        </div>
+        <div class="field">
+          <label>平台</label>
+          <div class="checkbox-group">
+            <label><input type="checkbox" id="plat-boss" checked> BOSS 直聘</label>
+            <label><input type="checkbox" id="plat-zhaopin"> 智联招聘</label>
+          </div>
         </div>
       </div>
-      <div class="field">
-        <label>城市 (回车添加)</label>
-        <div class="tag-input-wrap" id="city-tags">
-          <input id="city-input" placeholder="深圳">
-        </div>
-      </div>
-      <div class="field"><label>经验 ≤ 年</label><select id="exp"><option value="">不限</option><option value="0">应届</option><option value="1">1年</option><option value="3" selected>3年</option><option value="5">5年</option><option value="10">10年</option></select></div>
-      <div class="field"><label>平台</label><div style="display:flex;gap:8px;align-items:center;height:32px;font-size:13px;"><label style="color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="plat-boss" checked> BOSS</label><label style="color:var(--text);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="plat-zhaopin"> 智联</label></div></div>
-      <div class="field"><label>爬取页数</label><input id="pages" type="number" value="3" min="1" max="20"></div>
     </div>
-    <div class="config-row">
-      <div class="field"><label>薪资下限 K</label><input id="salary-min" type="number" value="6" min="0"></div>
-      <div class="field"><label>薪资上限 K</label><input id="salary-max" type="number" value="30" min="0"></div>
-      <div class="field"><label>公司规模 最少人</label><input id="scale-min" type="number" value="20" min="0"></div>
-      <div class="field"><label>公司规模 最多人</label><input id="scale-max" type="number" value="9999" min="0"></div>
-      <div class="field"><label>AI评分阈值</label><input id="score-threshold" type="number" value="60" min="0" max="100"></div>
+
+    <!-- Filter section -->
+    <div class="config-section filter-section">
+      <div class="section-title">筛选条件</div>
+      <div class="filter-row">
+        <div class="field"><label>最低薪资 (K)</label><input id="salary-min" type="number" value="6" min="0"></div>
+        <span class="filter-sep">—</span>
+        <div class="field"><label>最高薪资 (K)</label><input id="salary-max" type="number" value="30" min="0"></div>
+        <div class="field" style="margin-left:8px;"><label>最小规模 (人)</label><input id="scale-min" type="number" value="20" min="0"></div>
+        <span class="filter-sep">—</span>
+        <div class="field"><label>最大规模 (人)</label><input id="scale-max" type="number" value="9999" min="0"></div>
+        <div class="field" style="margin-left:8px;"><label>AI 评分阈值</label><input id="score-threshold" type="number" value="60" min="0" max="100"></div>
+      </div>
     </div>
   </div>
 
@@ -129,11 +282,11 @@
   <div class="action-bar">
     <button class="btn btn-primary" id="btn-scrape" onclick="startScrape()">1. 开始爬取</button>
     <button class="btn btn-outline" id="btn-score" onclick="startScore()" disabled>2. AI 评分</button>
-    <button class="btn btn-outline" id="btn-generate" onclick="startGenerate()" disabled>3. 统一生成招呼语</button>
-    <button class="btn btn-success" id="btn-send" onclick="startSend()" disabled>4. 统一发送</button>
-    <span style="flex:1"></span>
-    <button class="btn btn-outline" style="background:var(--accent);color:#fff;padding:8px 16px;" onclick="startAuto()" id="btn-auto">⚡ 全自动</button>
-    <button class="btn btn-outline" onclick="clearAll()">🗑 清空</button>
+    <button class="btn btn-outline" id="btn-generate" onclick="startGenerate()" disabled>3. 生成招呼语</button>
+    <button class="btn btn-outline" id="btn-send" onclick="startSend()" disabled>4. 统一发送</button>
+    <span class="spacer"></span>
+    <button class="btn btn-accent" id="btn-auto" onclick="startAuto()">全自动</button>
+    <button class="btn btn-outline" onclick="clearAll()">清空</button>
   </div>
 
   <!-- Progress -->
@@ -391,7 +544,7 @@ function startAuto() {
   document.getElementById('btn-auto').disabled = true;
   document.getElementById('live-log').innerHTML = '';
   document.getElementById('live-log').classList.add('active');
-  addLog('⚡ 全自动模式：爬取 → 评分 → 生成 → 发送');
+  addLog('全自动模式：爬取 → 评分 → 生成 → 发送');
   startScrape();
 }
 
@@ -409,11 +562,13 @@ function clearAll() {
   document.querySelectorAll('.action-bar .btn').forEach(b => {
     b.disabled = true;
     b.classList.add('btn-outline');
-    b.classList.remove('btn-primary', 'btn-success');
+    b.classList.remove('btn-primary', 'btn-success', 'btn-accent');
   });
   document.getElementById('btn-scrape').disabled = false;
   document.getElementById('btn-scrape').classList.replace('btn-outline', 'btn-primary');
   document.getElementById('btn-auto').disabled = false;
+  document.getElementById('btn-auto').classList.add('btn-accent');
+  document.getElementById('btn-auto').classList.remove('btn-outline');
 }
 
 // ── Job list render ────────────────────────────
@@ -440,9 +595,9 @@ function renderJobs() {
   const activeJobs = sorted.filter(j => !(j._scored === false || (j.platform !== 'zhaopin' && !j._greeting && (stage === 'generated' || stage === 'sending' || stage === 'done'))));
   const allChecked = activeJobs.length > 0 && activeJobs.every(j => j._checked);
 
-  let html = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:13px;">
-    <label style="cursor:pointer;color:var(--dim);display:flex;align-items:center;gap:4px;">
-      <input type="checkbox" onchange="toggleAll(this.checked)" ${allChecked ? 'checked' : ''} style="width:16px;height:16px;"> 全选 (${activeJobs.length}个)
+  let html = `<div class="select-bar">
+    <label>
+      <input type="checkbox" onchange="toggleAll(this.checked)" ${allChecked ? 'checked' : ''}> 全选 (${activeJobs.length} 个)
     </label>
   </div>`;
 
@@ -456,7 +611,7 @@ function renderJobs() {
     const scoreHtml = j._score ? `<span class="badge badge-score">${j._score}分</span>` : '';
 
     const platformLabel = j.platform === 'zhaopin' ? '智联' : 'BOSS';
-    const platformBadge = `<span class="badge" style="background:var(--border);color:var(--dim);">${platformLabel}</span>`;
+    const platformBadge = `<span class="badge" style="background:var(--border);color:var(--text-dim);">${platformLabel}</span>`;
 
     let statusBadge = '';
     if (j._send_status === 'ok') statusBadge = '<span class="badge badge-ok status-badge">✓ 已发送</span>';
@@ -484,7 +639,7 @@ function renderJobs() {
       </div>
       <div class="job-card-body">
         <div class="jd">${esc(j.jd || '无 JD')}</div>
-        <a href="${esc(j.url)}" target="_blank" style="font-size:12px;color:var(--accent);">在原站打开 →</a>
+        <a href="${esc(j.url)}" target="_blank" style="font-size:12px;color:var(--primary);">在原站打开 →</a>
         <div class="greeting-row" style="${j._greeting !== undefined ? '' : 'display:none'}">
           <textarea id="greeting-${realIdx}" oninput="updateGreeting(${realIdx})">${esc(j._greeting || '')}</textarea>
           <div class="greeting-actions">
