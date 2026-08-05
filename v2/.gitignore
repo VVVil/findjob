@@ -1,0 +1,15 @@
+# 配置文件（私密）
+config_1.yaml
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# 运行时输出
+output/
+
+# IDE
+.vscode/
+.idea/
