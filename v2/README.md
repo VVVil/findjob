@@ -7,7 +7,7 @@ BOSS直聘 + 智联招聘，爬岗位 → 硬过滤 → AI 评分 → 批量投�
 ## 首次安装
 
 ```powershell
-cd D:\findjob\findjob_new\v2
+cd findjob\v2
 .\venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -32,7 +32,7 @@ DEEPSEEK_API_KEY=sk-xxx
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9223 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_zhilian" "https://www.zhaopin.com"
 
 # 3. 启动 Web 服务
-cd D:\findjob\findjob_new\v2
+cd findjob\v2
 .\venv\Scripts\activate
 python -m uvicorn app:app --host 0.0.0.0 --port 8000
 ```
