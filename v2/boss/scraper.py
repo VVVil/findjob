@@ -226,153 +226,162 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
         if on_progress:
             on_progress("combo_start", {"idx": idx, "total": total_combos, "city": city, "keyword": keyword})
 
-        page_limit = per_combo_pages if per_combo_pages > 0 else max_pages
+        max_scrolls = per_combo_pages if per_combo_pages > 0 else max_pages
         combo_count = 0
 
-        for page in range(1, page_limit + 1):
+        # ── 阶段1：持续滚动搜素 tab，收集卡片 URL ──
+        search_url = SEARCH_URL.format(keyword=quote(keyword), city_code=city_code)
+        if exp_param:
+            search_url += f"&experience={exp_param}"
+        if scale_param:
+            search_url += f"&scale={scale_param}"
+
+        search_tab = browser.new_tab(search_url)
+        if not search_tab:
+            console.print(f"[red]  无法打开搜索页[/red]")
+            continue
+
+        time.sleep(2)
+        browser.wait_for_load(search_tab, timeout=10)
+
+        # 切到搜索 tab（仅 Chrome 内切换，不弹窗），确保 BOSS 懒加载生效
+        browser._send_cdp("Target.activateTarget", {"targetId": search_tab})
+
+        collected_cards = []
+        scroll_round = 0
+        dry_rounds = 0
+
+        while scroll_round < max_scrolls:
             if browser.is_shutdown:
-                console.print("  [yellow]收到退出信号[/yellow]")
-                break
-            search_url = SEARCH_URL.format(keyword=quote(keyword), city_code=city_code) + "&sortType=2"
-            if exp_param:
-                search_url += f"&experience={exp_param}"
-            if scale_param:
-                search_url += f"&scale={scale_param}"
-            if page > 1:
-                search_url += f"&page={page}"
-
-            target_id = browser.new_tab(search_url)
-            if not target_id:
-                console.print(f"[red]  无法打开搜索页 (第{page}页)[/red]")
                 break
 
-            time.sleep(2)
-            browser.wait_for_load(target_id, timeout=10)
-            browser.scroll(target_id, y=2000)
-            time.sleep(1)
+            scroll_round += 1
 
-            result = browser.evaluate(target_id, JS_EXTRACT_LIST)
-            browser.close_tab(target_id)
+            # 模拟人手滚动
+            viewport = browser.evaluate(search_tab, "window.innerHeight") or 800
+            for _ in range(4):
+                browser.evaluate(search_tab, f"window.scrollBy(0, {int(viewport * 1.2)})")
+                time.sleep(random.uniform(0.1, 0.25))
+            time.sleep(random.uniform(2.0, 3.0))
 
+            result = browser.evaluate(search_tab, JS_EXTRACT_LIST)
             if not result:
                 break
 
             try:
-                jobs = json.loads(result) if isinstance(result, str) else result
+                cards = json.loads(result) if isinstance(result, str) else result
             except (json.JSONDecodeError, TypeError):
                 break
 
-            if not jobs:
+            if not cards:
                 break
 
-            console.print(f"  [dim]第{page}页搜到 {len(jobs)} 张卡片[/dim]")
-            page_new = 0
-            filtered_count = 0
-            dup_count = 0
+            round_new = 0
+            for card in cards:
+                url = card.get("url", "")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                collected_cards.append(card)
+                round_new += 1
 
-            for job_data in jobs:
-                if browser.is_shutdown:
-                    console.print("  [yellow]收到退出信号[/yellow]")
+            console.print(f"  [dim]第{scroll_round}轮滚动: {len(cards)} 张卡片, +{round_new} 新[/dim]")
+
+            if round_new == 0:
+                dry_rounds += 1
+                if dry_rounds >= 3:
+                    console.print("  [dim]连续3轮无新卡片，停止滚动[/dim]")
                     break
-                job_url = job_data.get("url", "")
-                if job_url in seen_urls:
-                    dup_count += 1
-                    continue
-                seen_urls.add(job_url)
+            else:
+                dry_rounds = 0
 
-                # 先用列表数据做初步过滤
-                combined = {**job_data}
-                keep, reason = filter_job(combined, cfg, max_exp)
-                if not keep:
-                    filtered_count += 1
-                    continue
+        console.print(f"  [bold]滚动阶段结束: 共收集 {len(collected_cards)} 个不重复卡片[/bold]")
 
-                # 开详情页
-                company_preview = job_data.get("company", "?")[:12]
-                title_preview = job_data.get("title", "?")[:20]
-                console.print(f"  [dim]  📄 {company_preview} - {title_preview} ...[/dim]")
+        # ── 阶段2：逐条开详情、过滤 ──
+        filtered_count = 0
 
-                time.sleep(random.uniform(1.5, 3.0))
-                detail_url = f"https://www.zhipin.com{job_url}"
-                detail_target = browser.new_tab(detail_url)
-                if not detail_target:
-                    console.print(f"    [red]✗ 打不开详情页[/red]")
-                    continue
+        for job_data in collected_cards:
+            if browser.is_shutdown:
+                console.print("  [yellow]收到退出信号[/yellow]")
+                break
 
-                time.sleep(2)
-                browser.wait_for_load(detail_target, timeout=10)
-                detail_result = browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
-                browser.close_tab(detail_target)
+            # 先用列表数据做初步过滤
+            keep, reason = filter_job({**job_data}, cfg, max_exp)
+            if not keep:
+                filtered_count += 1
+                continue
 
-                if not detail_result:
-                    console.print(f"    [red]✗ 提取失败[/red]")
-                    continue
+            # 开详情页
+            company_preview = job_data.get("company", "?")[:12]
+            title_preview = job_data.get("title", "?")[:20]
+            console.print(f"  [dim]  📄 {company_preview} - {title_preview} ...[/dim]")
 
-                try:
-                    detail = json.loads(detail_result) if isinstance(detail_result, str) else detail_result
-                except (json.JSONDecodeError, TypeError):
-                    continue
+            time.sleep(random.uniform(1.5, 3.0))
+            detail_url = f"https://www.zhipin.com{job_data.get('url', '')}"
+            detail_target = browser.new_tab(detail_url)
+            if not detail_target:
+                console.print(f"    [red]✗ 打不开详情页[/red]")
+                continue
 
-                # 合并详情数据
-                job = {
-                    "title": detail.get("title") or job_data.get("title", ""),
-                    "company": detail.get("company") or job_data.get("company", ""),
-                    "salary": detail.get("salary") or job_data.get("salary", ""),
-                    "city": city,
-                    "experience": detail.get("experience") or job_data.get("experience", ""),
-                    "education": detail.get("education") or job_data.get("education", ""),
-                    "hr_name": detail.get("hr_name", ""),
-                    "hr_title": detail.get("hr_title", ""),
-                    "hr_active": detail.get("hr_active", ""),
-                    "company_size": detail.get("company_size", ""),
-                    "company_industry": detail.get("company_industry", ""),
-                    "url": detail_url,
-                    "jd": detail.get("jd", ""),
-                    "platform": "boss",
-                }
+            time.sleep(2)
+            browser.wait_for_load(detail_target, timeout=10)
+            detail_result = browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
+            browser.close_tab(detail_target)
 
-                # 用详情数据再过滤一次
-                keep, reason = filter_job(job, cfg, max_exp)
-                if not keep:
-                    filtered_count += 1
-                    console.print(f"    [yellow]✗ 过滤({reason}): {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
-                    if on_progress:
-                        on_progress("job_result", {"status": "filtered", "company": job.get("company",""),
-                                   "title": job.get("title",""), "salary": job.get("salary",""),
-                                   "experience": job.get("experience",""), "education": job.get("education","")})
-                    continue
+            if not detail_result:
+                console.print(f"    [red]✗ 提取失败[/red]")
+                continue
 
-                all_jobs.append(job)
-                page_new += 1
-                console.print(f"    [green]✓ [{len(all_jobs)}] {job['salary']} | {job['experience']} | {job['education']}[/green]")
+            try:
+                detail = json.loads(detail_result) if isinstance(detail_result, str) else detail_result
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            job = {
+                "title": detail.get("title") or job_data.get("title", ""),
+                "company": detail.get("company") or job_data.get("company", ""),
+                "salary": detail.get("salary") or job_data.get("salary", ""),
+                "city": city,
+                "experience": detail.get("experience") or job_data.get("experience", ""),
+                "education": detail.get("education") or job_data.get("education", ""),
+                "hr_name": detail.get("hr_name", ""),
+                "hr_title": detail.get("hr_title", ""),
+                "hr_active": detail.get("hr_active", ""),
+                "company_size": detail.get("company_size", ""),
+                "company_industry": detail.get("company_industry", ""),
+                "url": detail_url,
+                "jd": detail.get("jd", ""),
+                "platform": "boss",
+            }
+
+            keep, reason = filter_job(job, cfg, max_exp)
+            if not keep:
+                filtered_count += 1
+                console.print(f"    [yellow]✗ 过滤({reason}): {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
                 if on_progress:
-                    on_progress("job_result", {"status": "kept", "company": job.get("company",""),
+                    on_progress("job_result", {"status": "filtered", "company": job.get("company",""),
                                "title": job.get("title",""), "salary": job.get("salary",""),
                                "experience": job.get("experience",""), "education": job.get("education","")})
+                continue
 
-            extra = ""
-            if dup_count > 0:
-                extra += f", 重复 {dup_count}"
-            console.print(f"  [bold]第{page}页: +{page_new} 保留[/bold] (过滤 {filtered_count}{extra}) [累计 {len(all_jobs)}]")
+            all_jobs.append(job)
+            combo_count += 1
+            console.print(f"    [green]✓ [{len(all_jobs)}] {job['salary']} | {job['experience']} | {job['education']}[/green]")
             if on_progress:
-                on_progress("page_result", {"page": page, "page_jobs": len(jobs), "kept": page_new,
-                           "filtered": filtered_count, "dup": dup_count, "total_kept": len(all_jobs),
-                           "city": city, "keyword": keyword})
+                on_progress("job_result", {"status": "kept", "company": job.get("company",""),
+                           "title": job.get("title",""), "salary": job.get("salary",""),
+                           "experience": job.get("experience",""), "education": job.get("education","")})
 
-            # ── 更新组合计数 ──
-            combo_count += page_new
-
-            # ── 枯竭检测已移除：-p 翻到页数停，-n 翻到凑够或 max_pages 停 ──
-
-            # ── 组合目标达成 ──
             if target_per_combo and combo_count >= target_per_combo:
                 console.print(f"  [green]✓ 已满{target_per_combo}个 ({combo_count}/{target_per_combo})[/green]")
                 break
 
-            if browser.is_shutdown:
-                break
+        console.print(f"  [bold]组合完成: +{combo_count} 保留[/bold] (过滤 {filtered_count}) [累计 {len(all_jobs)}]")
+        if on_progress:
+            on_progress("page_result", {"page": 1, "page_jobs": len(collected_cards), "kept": combo_count,
+                       "filtered": filtered_count, "dup": 0, "total_kept": len(all_jobs),
+                       "city": city, "keyword": keyword})
 
-            if page < page_limit:
-                time.sleep(random.uniform(2.0, 4.0))
+        browser.close_tab(search_tab)
 
     return all_jobs
