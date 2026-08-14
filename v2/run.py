@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import random
+import signal
 import sys
 import threading
 import time
@@ -39,6 +40,49 @@ HERE = Path(__file__).resolve().parent
 
 # Ctrl+C flag
 _shutdown_requested = threading.Event()
+_resume_lock = threading.Lock()
+RESUME_FILE = "output/jobs_auto_resume.json"
+
+
+def _hard_interrupt(signum, frame):
+    """硬中断：绕过 Python 异常机制，OS 层直接杀进程。
+
+    当主线程被同步 socket I/O（httpx/OpenAI client）阻塞时，
+    Python 的 KeyboardInterrupt 无法投递。此 handler 由 OS 的
+    console control handler 直接调用，保证 Ctrl+C 始终有效。
+    """
+    console.print("\n[yellow]Ctrl+C 已触发，正在退出...[/yellow]")
+    _shutdown_browsers()
+    os._exit(0)
+
+
+signal.signal(signal.SIGINT, _hard_interrupt)
+
+
+def _save_resume(pairs: list, start_idx: int) -> None:
+    """将 pairs[start_idx:] 写入断点续跑文件，每个 job 嵌入 _greeting"""
+    remaining = []
+    for job, greeting in pairs[start_idx:]:
+        job_copy = dict(job)
+        job_copy["_greeting"] = greeting
+        remaining.append(job_copy)
+    with _resume_lock:
+        try:
+            resume_path = os.path.join(HERE, RESUME_FILE)
+            with open(resume_path, "w", encoding="utf-8") as f:
+                json.dump(remaining, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # 写文件失败不影响主流程
+
+
+def _clear_resume() -> None:
+    """删除断点续跑文件"""
+    resume_path = os.path.join(HERE, RESUME_FILE)
+    try:
+        if os.path.exists(resume_path):
+            os.remove(resume_path)
+    except Exception:
+        pass
 
 # 各平台浏览器实例（在 main() 中创建）
 _boss_browser: BrowserSession | None = None
@@ -133,6 +177,7 @@ def main():
     parser.add_argument("--score-min", type=int, default=None, help="评分阈值，低于此分自动筛掉")
     parser.add_argument("-r", "--resume", default=None, help="简历路径，覆盖 config.yaml")
     parser.add_argument("-a", "--auto", action="store_true", help="全自动：爬→评→生成→发，零确认")
+    parser.add_argument("--scrape-only", action="store_true", help="只爬取保存JSON，不评分不发送（适合无人值守）")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -287,6 +332,10 @@ def main():
         json_path.write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
         console.print(f"\n[green]✓ 已保存 {len(jobs)} 个岗位 → {json_path}[/green]")
 
+        if args.scrape_only:
+            console.print(f"[green] --scrape-only，退出（文件: {json_path}）[/green]")
+            sys.exit(0)
+
     # ── a/s/t/q 批阅 ────────────────────────────────
     if not jobs:
         sys.exit(0)
@@ -357,11 +406,16 @@ def main():
                 pending.append((job, ""))
                 console.print(f"[dim]  [{i}/{len(jobs)}] [{p}] {job['company']} - {job['title']} → 待投递[/dim]")
             else:
-                console.print(f"[dim]  [{i}/{len(jobs)}] [{p}] {job['company']} - {job['title']} 生成中...[/dim]", end="\r")
-                greeting = generate_greeting(client, model, resume, job)
-                if not greeting:
-                    console.print(f"[yellow]  [{i}/{len(jobs)}] [{p}] {job['company']} - 生成失败，跳过[/yellow]")
-                    continue
+                # 断点续跑：如果 job 自带招呼语则直接使用
+                if "_greeting" in job:
+                    greeting = job.pop("_greeting")
+                    console.print(f"[dim]  [{i}/{len(jobs)}] [{p}] {job['company']} - {job['title']} → 断点续跑[/dim]")
+                else:
+                    console.print(f"[dim]  [{i}/{len(jobs)}] [{p}] {job['company']} - {job['title']} 生成中...[/dim]", end="\r")
+                    greeting = generate_greeting(client, model, resume, job)
+                    if not greeting:
+                        console.print(f"[yellow]  [{i}/{len(jobs)}] [{p}] {job['company']} - 生成失败，跳过[/yellow]")
+                        continue
                 pending.append((job, greeting))
         console.print(f"\n[green]✓ 待处理队列: {len(pending)} 个（招呼语+投递）[/green]\n")
     else:
@@ -387,22 +441,25 @@ def main():
                 pending.append((job, ""))
                 console.print(f"[dim]  ✓ 已入队 (队列: {len(pending)} 条)[/dim]")
             else:
-                # BOSS：生成招呼语
+                # BOSS：生成招呼语（断点续跑时直接使用已生成的）
                 action = Prompt.ask("  [bold]y=生成招呼语  n=跳过  f=审完发[/bold]", choices=["y", "n", "f"], default="y")
                 if action == "f":
                     break
                 elif action == "n":
                     continue
 
-                console.print("[dim]  生成招呼语...[/dim]")
-                greeting = generate_greeting(client, model, resume, job)
-                if not greeting:
-                    console.print("[yellow]  生成失败，跳过[/yellow]")
-                    continue
-
-                console.print(f"[green]  招呼语:[/green] {greeting}")
-
-                act = Prompt.ask("  [bold]入队/编辑/跳过？[/bold]", choices=["y", "e", "n"], default="y")
+                if "_greeting" in job:
+                    greeting = job.pop("_greeting")
+                    console.print(f"[green]  招呼语(续跑):[/green] {greeting}")
+                    act = Prompt.ask("  [bold]入队/编辑/跳过？[/bold]", choices=["y", "e", "n"], default="y")
+                else:
+                    console.print("[dim]  生成招呼语...[/dim]")
+                    greeting = generate_greeting(client, model, resume, job)
+                    if not greeting:
+                        console.print("[yellow]  生成失败，跳过[/yellow]")
+                        continue
+                    console.print(f"[green]  招呼语:[/green] {greeting}")
+                    act = Prompt.ask("  [bold]入队/编辑/跳过？[/bold]", choices=["y", "e", "n"], default="y")
                 if act == "n":
                     continue
                 elif act == "e":
@@ -454,6 +511,8 @@ def main():
                 sent += 1
             else:
                 console.print(f"[red]  ✗ 失败: {err}[/red]")
+            # 断点续跑：保存剩余未发的（含已生成招呼语）
+            _save_resume(pairs, i)
             if i < total:
                 wait = random.uniform(2, 5) if is_zhilian else random.uniform(15, 25)
                 console.print(f"[dim]  等待 {wait:.0f}s...[/dim]")
@@ -492,6 +551,7 @@ def main():
             os._exit(0)
 
     total = len(pending)
+    _clear_resume()  # 全部完成，清除断点文件
     console.print(f"\n[bold green]═══ 批量完成！成功 {sent}/{total} ═══[/bold green]")
 
 

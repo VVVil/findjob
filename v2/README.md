@@ -26,7 +26,7 @@ DEEPSEEK_API_KEY=sk-xxx
 
 ```powershell
 # 1. 启动 BOSS Chrome
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_boss" "https://www.zhipin.com"
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_boss" "https://www.zhipin.com" --disable-frame-rate-limit --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion
 
 # 2.（可选）启动智联 Chrome
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9223 --remote-allow-origins=* --user-data-dir="$env:TEMP\chrome_zhilian" "https://www.zhaopin.com"

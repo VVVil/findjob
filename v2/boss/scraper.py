@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from rich.console import Console
 
+from browser import TabPool
 from filters import filter_job
 
 console = Console()
@@ -115,6 +116,69 @@ JS_EXTRACT_LIST = """
 })()
 """
 
+JS_ACTIVATE_DETAIL = """
+(async () => {
+    // 轮询等待 BOSS Vue SPA 真正渲染出内容，而不是只等 readyState
+    // BOSS 详情页即使 readyState=complete，JD 区域也可能还在转圈/未渲染
+    const start = Date.now();
+    const timeout = 12000;  // 最多等 12 秒
+
+    while (Date.now() - start < timeout) {
+        // 检查 JD 内容是否已出现
+        const jd = document.querySelector('.job-sec-text, .job-detail, .detail-content');
+        if (jd && jd.textContent.trim().length > 30) return 'ok';
+
+        // 检查标题 + 薪资是否同时就绪（部分页面无 JD 但基本信息应该有）
+        const title = document.querySelector('.info-primary .name h1, .name h1');
+        const salary = document.querySelector('.salary');
+        if (title && salary && title.textContent.trim() && salary.textContent.trim()) {
+            // 基本信息 OK，再等一下 JD
+            await new Promise(r => setTimeout(r, 300));
+            const jd2 = document.querySelector('.job-sec-text, .job-detail, .detail-content');
+            if (jd2 && jd2.textContent.trim().length > 30) return 'ok';
+            // 基本信息有了但 JD 为空，尝试点击 tab 触发渲染
+        }
+
+        // 策略1: 关掉可能的 loading overlay / 弹窗
+        const overlays = document.querySelectorAll('.loading, .skeleton, [class*="loading"], [class*="spin"]');
+        // 不关 overlay（可能不是遮罩），转而尝试点掉干扰元素
+        const closeBtn = document.querySelector('.boss-popup__close, .icon-close, .dialog-close');
+        if (closeBtn) closeBtn.click();
+
+        // 策略2: 点击"职位描述"/"职位详情" tab 触发 Vue 渲染
+        const tabSelectors = [
+            '.job-tab', '.detail-tab', '.tab-item', '[class*="tab"]',
+            '.job-menu li', '.detail-nav li', '.tab-bar li',
+            '.info-tab', '.job-info-tab',
+        ];
+        for (const sel of tabSelectors) {
+            const tabs = document.querySelectorAll(sel);
+            for (const tab of tabs) {
+                const text = tab.textContent || '';
+                if (text.includes('职位描述') || text.includes('职位详情') || text.includes('工作内容') || text.includes('岗位职责')) {
+                    tab.click();
+                    break;
+                }
+            }
+        }
+
+        // 策略3: 滚动到可见区域，触发懒加载
+        const jdArea = document.querySelector('.job-sec-text, .job-detail, .detail-content');
+        if (jdArea) jdArea.scrollIntoView({behavior: 'instant', block: 'center'});
+        window.scrollBy(0, 300);
+
+        await new Promise(r => setTimeout(r, 800));
+    }
+
+    // 超时后最后检查一次
+    const jd = document.querySelector('.job-sec-text, .job-detail, .detail-content');
+    if (jd && jd.textContent.trim().length > 10) return 'ok_partial';
+    const title = document.querySelector('.info-primary .name h1, .name h1');
+    if (title && title.textContent.trim()) return 'basic_only';  // 至少有标题，让提取器自己尽力
+    return 'timeout';
+})()
+"""
+
 JS_EXTRACT_DETAIL = """
 (() => {
     const info = {};
@@ -136,7 +200,14 @@ JS_EXTRACT_DETAIL = """
         if (!info.education && tags[1]) info.education = tags[1].textContent.trim();
     }
 
-    info.jd = document.querySelector('.job-sec-text')?.textContent?.trim() || '';
+    // JD — 多个 fallback selector，适应 BOSS 不同版本的 DOM
+    info.jd = document.querySelector('.job-sec-text')?.textContent?.trim()
+        || document.querySelector('.job-detail')?.textContent?.trim()
+        || document.querySelector('.detail-content')?.textContent?.trim()
+        || document.querySelector('.describe-text')?.textContent?.trim()
+        || document.querySelector('[class*="job-sec"]')?.textContent?.trim()
+        || document.querySelector('[class*="detail-text"]')?.textContent?.trim()
+        || '';
 
     // Company
     const companyLinks = document.querySelectorAll('.sider-company .company-info a');
@@ -178,6 +249,10 @@ JS_EXTRACT_DETAIL = """
     }
     info.hr_active = document.querySelector('.boss-online-tag')?.textContent?.trim() || '';
     info.url = window.location.pathname;
+
+    // 检测是否已沟通过：按钮是"继续沟通"而非"立即沟通"
+    const chatBtn = document.querySelector('.btn-startchat, .op-btn-chat, [ka*="chat"]');
+    info.already_contacted = chatBtn ? chatBtn.textContent.includes('继续') : false;
 
     return JSON.stringify(info);
 })()
@@ -257,11 +332,12 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
             scroll_round += 1
 
-            # 模拟人手滚动
+            # CDP mouseWheel：熄屏/后台也能触发 BOSS Vue 懒加载
+            # JS scrollBy 在 rAF 暂停时无效（Chrome 熄屏/后台 tab）
             viewport = browser.evaluate(search_tab, "window.innerHeight") or 800
-            for _ in range(4):
-                browser.evaluate(search_tab, f"window.scrollBy(0, {int(viewport * 1.2)})")
-                time.sleep(random.uniform(0.1, 0.25))
+            total_scroll = int(viewport * 1.2 * 4)
+            browser.scroll_wheel(search_tab, delta_y=total_scroll,
+                                 repeat=4, interval=random.uniform(0.1, 0.25))
             time.sleep(random.uniform(2.0, 3.0))
 
             result = browser.evaluate(search_tab, JS_EXTRACT_LIST)
@@ -297,8 +373,13 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
         console.print(f"  [bold]滚动阶段结束: 共收集 {len(collected_cards)} 个不重复卡片[/bold]")
 
-        # ── 阶段2：逐条开详情、过滤 ──
+        # ── 阶段2：TabPool 并发开详情、提取、dwell ──
         filtered_count = 0
+
+        # TabPool：最多 4 个并发 tab，每个停留 20-35s 模拟人类阅读，
+        # 开 tab 间隔 4-8s，逐个 stagger
+        pool = TabPool(browser, max_concurrent=4,
+                       dwell_range=(20, 35), stagger_range=(4, 8))
 
         for job_data in collected_cards:
             if browser.is_shutdown:
@@ -311,22 +392,20 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
                 filtered_count += 1
                 continue
 
-            # 开详情页
             company_preview = job_data.get("company", "?")[:12]
             title_preview = job_data.get("title", "?")[:20]
-            console.print(f"  [dim]  📄 {company_preview} - {title_preview} ...[/dim]")
+            console.print(f"  [dim]  📄 {company_preview} - {title_preview} ... (池中 {pool.active_count} 个 tab)[/dim]")
 
-            time.sleep(random.uniform(1.5, 3.0))
             detail_url = f"https://www.zhipin.com{job_data.get('url', '')}"
-            detail_target = browser.new_tab(detail_url)
-            if not detail_target:
-                console.print(f"    [red]✗ 打不开详情页[/red]")
-                continue
 
-            time.sleep(2)
-            browser.wait_for_load(detail_target, timeout=10)
-            detail_result = browser.evaluate(detail_target, JS_EXTRACT_DETAIL)
-            browser.close_tab(detail_target)
+            # TabPool.submit 自动处理: stagger → 开 tab → 激活 → 提取 → dwell
+            detail_result = pool.submit(
+                detail_url,
+                activate_js=JS_ACTIVATE_DETAIL,
+                extract_js=JS_EXTRACT_DETAIL,
+                activate_timeout=15,
+                extract_timeout=15,
+            )
 
             if not detail_result:
                 console.print(f"    [red]✗ 提取失败[/red]")
@@ -335,6 +414,12 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
             try:
                 detail = json.loads(detail_result) if isinstance(detail_result, str) else detail_result
             except (json.JSONDecodeError, TypeError):
+                continue
+
+            # 跳过已沟通过的（按钮是"继续沟通"而非"立即沟通"）
+            if detail.get("already_contacted"):
+                filtered_count += 1
+                console.print(f"    [dim]⏭ 已沟通过，跳过[/dim]")
                 continue
 
             job = {
@@ -375,6 +460,9 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
             if target_per_combo and combo_count >= target_per_combo:
                 console.print(f"  [green]✓ 已满{target_per_combo}个 ({combo_count}/{target_per_combo})[/green]")
                 break
+
+        # 等所有剩余 tab dwell 结束
+        pool.drain()
 
         console.print(f"  [bold]组合完成: +{combo_count} 保留[/bold] (过滤 {filtered_count}) [累计 {len(all_jobs)}]")
         if on_progress:
