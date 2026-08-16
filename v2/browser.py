@@ -11,7 +11,10 @@ CDP 直连 Chrome — BrowserSession
 """
 
 import json
+import os
 import random
+import subprocess
+import tempfile
 import threading
 import time
 
@@ -35,6 +38,81 @@ def configure(config: dict | None = None) -> None:
     pass
 
 
+# ── Chrome 自动启动 ───────────────────────────────
+
+CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+
+def launch_chrome(port: int, user_data_dir_name: str, start_url: str) -> bool:
+    """启动一个独立 user-data-dir 的 debug Chrome。
+
+    熄屏/后台也能触发懒加载：--disable-renderer-backgrounding 等三个 flag，
+    配合 scroll_wheel 的 CDP 滚轮，让 BOSS/智联的 Vue 列表在后台继续加载。
+    """
+    user_data_dir = os.path.join(tempfile.gettempdir(), user_data_dir_name)
+    cmd = [
+        CHROME_PATH,
+        f"--remote-debugging-port={port}",
+        "--remote-allow-origins=*",
+        f"--user-data-dir={user_data_dir}",
+        start_url,
+        "--disable-frame-rate-limit",
+        "--disable-renderer-backgrounding",
+        "--disable-features=CalculateNativeWinOcclusion",
+    ]
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:
+        return False
+
+
+def ensure_chrome(port: int, user_data_dir_name: str, start_url: str,
+                  wait: float = 15.0) -> bool:
+    """确保 debug Chrome 在指定端口运行；不在则自动启动并等待就绪。"""
+    if check_chrome_connection(port):
+        return True
+    if not launch_chrome(port, user_data_dir_name, start_url):
+        return False
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if check_chrome_connection(port):
+            time.sleep(2)  # 给首页 + 登录态恢复留缓冲
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def close_chrome(port: int) -> None:
+    """关闭指定 debug 端口的 Chrome 浏览器进程。
+
+    先发 CDP 的 Browser.close 优雅关闭；连接失败/无效再按命令行匹配
+    --remote-debugging-port 用 PowerShell 强杀进程（不依赖 WS 是否还活着）。
+    """
+    # 1) CDP Browser.close —— fire-and-forget，浏览器收到即关闭，不读响应
+    try:
+        resp = httpx.get(f"http://127.0.0.1:{port}/json/version", timeout=3)
+        ws = websocket.create_connection(resp.json()["webSocketDebuggerUrl"],
+                                         timeout=3, suppress_origin=True)
+        ws.send(json.dumps({"id": 1, "method": "Browser.close", "params": {}}))
+        ws.close()
+        return
+    except Exception:
+        pass
+
+    # 2) 兜底：按命令行匹配 --remote-debugging-port 强杀
+    try:
+        ps = (
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+            f"Where-Object {{ $_.CommandLine -match 'remote-debugging-port={port}' }} | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        )
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                       capture_output=True, timeout=20)
+    except Exception:
+        pass
+
+
 # ══════════════════════════════════════════════════════
 
 class BrowserSession:
@@ -46,6 +124,7 @@ class BrowserSession:
         self._ws = None
         self._sessions: dict[str, str] = {}   # targetId → sessionId
         self._shutdown = threading.Event()
+        self._created_tabs: set[str] = set()  # 本 session 通过 new_tab 打开的 tab
 
     # ── 生命周期 ──────────────────────────────────
 
@@ -164,6 +243,7 @@ class BrowserSession:
             return None
         target_id = result.get("targetId")
         if target_id:
+            self._created_tabs.add(target_id)
             self._attach(target_id)
             self._wait_for_load(target_id)
         return target_id
@@ -171,7 +251,19 @@ class BrowserSession:
     def close_tab(self, target_id: str) -> None:
         """关闭指定 tab"""
         self._detach(target_id)
+        self._created_tabs.discard(target_id)
         self._send_cdp("Target.closeTarget", {"targetId": target_id})
+
+    def close_all_tabs(self) -> None:
+        """关闭本 session 打开的所有 tab —— 用于立即中断爬取（打断正在 dwell/提取的 tab）。
+        只关爬虫自己 new_tab 创建的标签，不影响用户手动打开的标签页，也不关浏览器进程。"""
+        for target_id in list(self._created_tabs):
+            self._detach(target_id)
+            try:
+                self._send_cdp("Target.closeTarget", {"targetId": target_id})
+            except Exception:
+                pass
+        self._created_tabs.clear()
 
     def navigate(self, target_id: str, url: str) -> dict | None:
         """导航 tab 到指定 URL"""

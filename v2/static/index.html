@@ -238,6 +238,12 @@
             <input id="city-input" placeholder="输入城市后回车添加">
           </div>
         </div>
+        <div class="field field-wide">
+          <label>过滤关键词</label>
+          <div class="tag-input-wrap" id="deal-breaker-tags">
+            <input id="deal-breaker-input" placeholder="输入过滤关键词后回车添加">
+          </div>
+        </div>
         <div class="field">
           <label>经验要求</label>
           <select id="exp">
@@ -281,6 +287,7 @@
   <!-- Action buttons -->
   <div class="action-bar">
     <button class="btn btn-primary" id="btn-scrape" onclick="startScrape()">1. 开始爬取</button>
+    <button class="btn btn-danger" id="btn-stop" onclick="stopScrape()">停止</button>
     <button class="btn btn-outline" id="btn-score" onclick="startScore()" disabled>2. AI 评分</button>
     <button class="btn btn-outline" id="btn-generate" onclick="startGenerate()" disabled>3. 生成招呼语</button>
     <button class="btn btn-outline" id="btn-send" onclick="startSend()" disabled>4. 统一发送</button>
@@ -346,10 +353,22 @@ function addTag(wrap, input, value) {
 
 const kwInput = setupTags('kw-tags', 'kw-input');
 const cityInput = setupTags('city-tags', 'city-input');
+const dealBreakerInput = setupTags('deal-breaker-tags', 'deal-breaker-input');
 
 // Defaults
 kwInput.set(['AI开发', 'Python', 'Agent']);
 cityInput.set(['深圳', '广州']);
+async function loadFormDefaults() {
+  try {
+    const response = await fetch('/api/config');
+    if (!response.ok) throw new Error('Unable to load config');
+    const config = await response.json();
+    dealBreakerInput.set(config.deal_breakers || []);
+  } catch (error) {
+    console.error('Failed to load form defaults:', error);
+  }
+}
+loadFormDefaults();
 
 // ── WebSocket ──────────────────────────────────
 let ws;
@@ -452,6 +471,8 @@ function handleEvent(type, data) {
       document.getElementById('btn-auto').disabled = false;
       loadJobs();
       break;
+
+    case 'sending':
       label.textContent = `发送中: ${data.progress} — ${data.company}...`;
       break;
 
@@ -486,6 +507,7 @@ function addLog(msg, isError) {
 async function startScrape() {
   const keywords = kwInput.getTags().join(' ');
   const cities = cityInput.getTags().join(' ');
+  const deal_breakers = dealBreakerInput.getTags().join(' ');
   if (!keywords || !cities) return alert('请填写关键词和城市');
 
   document.getElementById('btn-scrape').disabled = true;
@@ -501,7 +523,7 @@ async function startScrape() {
   if (document.getElementById('plat-zhaopin').checked) platforms.push('zhaopin');
 
   const params = {
-    keywords, cities, platforms,
+    keywords, cities, deal_breakers, platforms,
     pages: parseInt(document.getElementById('pages').value) || 2,
     max_exp: expVal ? parseInt(expVal) : null,
     salary_min: parseInt(document.getElementById('salary-min').value) || null,
@@ -511,6 +533,14 @@ async function startScrape() {
   };
 
   await fetch('/api/scrape', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(params) });
+}
+
+async function stopScrape() {
+  await fetch('/api/stop', { method: 'POST' });
+  document.getElementById('live-log').innerHTML = '';
+  document.getElementById('live-log').classList.add('active');
+  addLog('已停止');
+  document.getElementById('btn-scrape').disabled = false;
 }
 
 async function startScore() {
@@ -536,7 +566,21 @@ async function startGenerate() {
 async function startSend() {
   document.getElementById('btn-send').disabled = true;
   document.getElementById('live-log').innerHTML = '';
-  await fetch('/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  const urls = jobs.filter(j => j._checked).map(j => j.url);
+  try {
+    const resp = await fetch('/api/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls })
+    });
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.error || `发送请求失败 (${resp.status})`);
+    }
+    stage = 'sending';
+  } catch (err) {
+    addLog(`❌ ${err.message}`, true);
+    document.getElementById('btn-send').disabled = false;
+  }
 }
 
 function startAuto() {
@@ -573,9 +617,15 @@ function clearAll() {
 
 // ── Job list render ────────────────────────────
 async function loadJobs() {
+  // _checked / _expanded 是纯前端交互状态，接口返回的岗位数据不包含它们。
+  // 刷新发送状态或招呼语后必须按 URL 合并回来，否则“生成完成”会清空勾选。
+  const localState = new Map(jobs.map(j => [j.url, {
+    _checked: j._checked,
+    _expanded: j._expanded,
+  }]));
   const resp = await fetch('/api/jobs');
   const data = await resp.json();
-  jobs = data.jobs;
+  jobs = data.jobs.map(job => ({ ...job, ...(localState.get(job.url) || {}) }));
   renderJobs();
   updateSummary();
 }

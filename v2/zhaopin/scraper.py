@@ -9,11 +9,8 @@ import random
 import time
 from urllib.parse import quote
 
-from rich.console import Console
-
 from filters import filter_job
-
-console = Console()
+from logbridge import ScrapeAborted, console, set_web_log_hook
 
 # ── 搜索 URL ──────────────────────────────────────────
 SEARCH_URL = "https://sou.zhaopin.com/?jl={city_code}&kw={keyword}&p={page}"
@@ -183,8 +180,7 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
         for page in range(1, page_limit + 1):
             if browser.is_shutdown:
-                console.print("  [yellow]收到退出信号[/yellow]")
-                break
+                raise ScrapeAborted()
             search_url = SEARCH_URL.format(
                 keyword=quote(keyword),
                 city_code=city_code,
@@ -225,8 +221,7 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
             for job_data in card_jobs:
                 if browser.is_shutdown:
-                    console.print("  [yellow]收到退出信号[/yellow]")
-                    break
+                    raise ScrapeAborted()
                 job_url = job_data.get("url", "")
                 if job_url in seen_urls:
                     dup_count += 1
@@ -335,7 +330,7 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
                 break
 
             if browser.is_shutdown:
-                break
+                raise ScrapeAborted()
 
             if page < page_limit:
                 time.sleep(random.uniform(2.0, 4.0))

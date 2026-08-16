@@ -9,12 +9,9 @@ import random
 import time
 from urllib.parse import quote
 
-from rich.console import Console
-
 from browser import TabPool
 from filters import filter_job
-
-console = Console()
+from logbridge import ScrapeAborted, console, set_web_log_hook
 
 # ── BOSS直聘搜索 URL ─────────────────────────────────
 SEARCH_URL = "https://www.zhipin.com/web/geek/jobs?query={keyword}&city={city_code}"
@@ -328,7 +325,7 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
         while scroll_round < max_scrolls:
             if browser.is_shutdown:
-                break
+                raise ScrapeAborted()
 
             scroll_round += 1
 
@@ -383,8 +380,7 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
 
         for job_data in collected_cards:
             if browser.is_shutdown:
-                console.print("  [yellow]收到退出信号[/yellow]")
-                break
+                raise ScrapeAborted()
 
             # 先用列表数据做初步过滤
             keep, reason = filter_job({**job_data}, cfg, max_exp)

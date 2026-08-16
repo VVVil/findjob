@@ -15,10 +15,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# Windows 后台运行时 stdout 为 GBK 编码，rich 打印 emoji（📄 ✓ ✗ ⏭）会抛
+# UnicodeEncodeError 并中断爬虫线程。强制 stdout/stderr 用 UTF-8，兜底 replace。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from logbridge import ScrapeAborted, set_web_log_hook
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -28,7 +36,7 @@ from boss.scraper import scrape as scrape_boss
 from boss.sender import send_greeting as boss_send
 from zhaopin.scraper import scrape as scrape_zhaopin
 from zhaopin.sender import apply_job as zhilian_apply
-from browser import BrowserSession, check_chrome_connection
+from browser import BrowserSession, check_chrome_connection, ensure_chrome, close_chrome
 
 app = FastAPI(title="findjob")
 
@@ -110,6 +118,10 @@ def _scraper_progress(event_type: str, data: dict):
     ws_manager.broadcast(event_type, data)
 
 
+# 让 scraper 里的 console.print 日志也转发到 Web 前端
+set_web_log_hook(_scraper_progress)
+
+
 # ═══════════════════════════════════════════════
 #  WebSocket
 # ═══════════════════════════════════════════════
@@ -133,6 +145,12 @@ async def get_jobs():
     return {"jobs": _jobs, "total": len(_jobs)}
 
 
+@app.get("/api/config")
+async def get_config():
+    cfg = load_cfg()
+    return {"deal_breakers": cfg.get("deal_breakers", [])}
+
+
 @app.post("/api/scrape")
 async def start_scrape(params: dict):
     global _jobs, _browser
@@ -148,10 +166,16 @@ async def start_scrape(params: dict):
     boss_port = _cfg.get("browser", {}).get("boss_port", 9222)
     zhilian_port = _cfg.get("browser", {}).get("zhilian_port", 9223)
 
-    if boss_need and not check_chrome_connection(boss_port):
-        return JSONResponse({"error": f"BOSS Chrome 未连接 (port {boss_port})"}, status_code=400)
-    if zhilian_need and not check_chrome_connection(zhilian_port):
-        return JSONResponse({"error": f"智联 Chrome 未连接 (port {zhilian_port})"}, status_code=400)
+    if boss_need:
+        if not check_chrome_connection(boss_port):
+            ws_manager.broadcast("log", {"msg": f"BOSS Chrome 未运行，自动启动中 (port {boss_port})..."})
+        if not await asyncio.to_thread(ensure_chrome, boss_port, "chrome_boss", "https://www.zhipin.com"):
+            return JSONResponse({"error": f"BOSS Chrome 启动失败 (port {boss_port})"}, status_code=400)
+    if zhilian_need:
+        if not check_chrome_connection(zhilian_port):
+            ws_manager.broadcast("log", {"msg": f"智联 Chrome 未运行，自动启动中 (port {zhilian_port})..."})
+        if not await asyncio.to_thread(ensure_chrome, zhilian_port, "chrome_zhilian", "https://www.zhaopin.com"):
+            return JSONResponse({"error": f"智联 Chrome 启动失败 (port {zhilian_port})"}, status_code=400)
 
     keywords = [k.strip() for k in params.get("keywords", "").split() if k.strip()]
     cities = [c.strip() for c in params.get("cities", "").split() if c.strip()]
@@ -172,7 +196,7 @@ async def start_scrape(params: dict):
         from boss.scraper import _build_scale_param
         run_cfg["boss_scale"] = _build_scale_param(scale_min, scale_max)
 
-    if params.get("deal_breakers"):
+    if "deal_breakers" in params:
         run_cfg["deal_breakers"] = params.get("deal_breakers", "").split()
 
     def _run_scrape():
@@ -180,6 +204,7 @@ async def start_scrape(params: dict):
         threads: list[tuple] = []
         results_boss: list[dict] = []
         results_zhaopin: list[dict] = []
+        aborted = threading.Event()
 
         if boss_need:
             _boss_browser = BrowserSession(port=boss_port)
@@ -191,6 +216,8 @@ async def start_scrape(params: dict):
                         per_combo_pages=pages, max_exp=max_exp,
                         on_progress=_scraper_progress
                     ))
+                except ScrapeAborted:
+                    aborted.set()
                 except Exception as e:
                     import traceback
                     ws_manager.broadcast("error", {"stage": "boss_scrape", "message": str(e), "trace": traceback.format_exc()})
@@ -206,6 +233,8 @@ async def start_scrape(params: dict):
                         per_combo_pages=pages, max_exp=max_exp,
                         on_progress=_scraper_progress
                     ))
+                except ScrapeAborted:
+                    aborted.set()
                 except Exception as e:
                     import traceback
                     ws_manager.broadcast("error", {"stage": "zhilian_scrape", "message": str(e), "trace": traceback.format_exc()})
@@ -216,10 +245,34 @@ async def start_scrape(params: dict):
         for t, _ in threads:
             t.join()
 
+        if aborted.is_set():
+            ws_manager.broadcast("log", {"msg": "已停止，本次爬取数据未保存"})
+            return
+
         _jobs = results_boss + results_zhaopin
         ws_manager.broadcast("scrape_done", {"total": len(_jobs), "boss": len(results_boss), "zhaopin": len(results_zhaopin)})
 
     threading.Thread(target=_run_scrape, daemon=True).start()
+    return {"status": "ok"}
+
+
+@app.post("/api/stop")
+async def stop_all():
+    """中断爬取：关闭 BOSS + 智联两个 debug 浏览器进程，不保存已爬数据"""
+    cfg = load_cfg()
+    boss_port = cfg.get("browser", {}).get("boss_port", 9222)
+    zhilian_port = cfg.get("browser", {}).get("zhilian_port", 9223)
+
+    # 先通知爬虫线程退出（触发 ScrapeAborted，跳过结果保存）
+    for b in (_boss_browser, _zhilian_browser):
+        if b is not None:
+            b.shutdown()
+
+    # 关闭两个浏览器进程（放线程池，避免阻塞事件循环）
+    await asyncio.to_thread(close_chrome, boss_port)
+    await asyncio.to_thread(close_chrome, zhilian_port)
+
+    ws_manager.broadcast("log", {"msg": "已停止，BOSS/智联 浏览器已关闭"})
     return {"status": "ok"}
 
 
@@ -342,10 +395,35 @@ async def update_greeting(params: dict):
 async def start_send(params: dict):
     global _boss_browser, _zhilian_browser
 
-    # 只发送用户勾选的岗位
+    # 只发送前端勾选的岗位（勾选 url 由前端传过来，后端 _jobs 不存 _checked）
+    selected_urls = set(params.get("urls", []) or [])
+    if not selected_urls:
+        return JSONResponse({"error": "没有勾选岗位"}, status_code=400)
+
+    # 确定需要哪些平台的浏览器，并确保在运行（停止可能已关闭它们）
+    cfg = load_cfg()
+    boss_port = cfg.get("browser", {}).get("boss_port", 9222)
+    zhilian_port = cfg.get("browser", {}).get("zhilian_port", 9223)
+
+    need_boss = any(j.get("url") in selected_urls and j.get("platform") != "zhaopin" for j in _jobs)
+    need_zhilian = any(j.get("url") in selected_urls and j.get("platform") == "zhaopin" for j in _jobs)
+
+    if need_boss:
+        if not check_chrome_connection(boss_port):
+            ws_manager.broadcast("log", {"msg": f"BOSS Chrome 未运行，自动启动中 (port {boss_port})..."})
+        if not await asyncio.to_thread(ensure_chrome, boss_port, "chrome_boss", "https://www.zhipin.com"):
+            return JSONResponse({"error": f"BOSS Chrome 启动失败 (port {boss_port})"}, status_code=400)
+        _boss_browser = BrowserSession(port=boss_port)
+    if need_zhilian:
+        if not check_chrome_connection(zhilian_port):
+            ws_manager.broadcast("log", {"msg": f"智联 Chrome 未运行，自动启动中 (port {zhilian_port})..."})
+        if not await asyncio.to_thread(ensure_chrome, zhilian_port, "chrome_zhilian", "https://www.zhaopin.com"):
+            return JSONResponse({"error": f"智联 Chrome 启动失败 (port {zhilian_port})"}, status_code=400)
+        _zhilian_browser = BrowserSession(port=zhilian_port)
+
     targets: list[tuple] = []
     for j in _jobs:
-        if not j.get("_checked"):
+        if j.get("url") not in selected_urls:
             continue
         if j.get("_send_status") == "ok":
             continue
