@@ -9,9 +9,43 @@ import random
 import time
 from urllib.parse import quote
 
-from browser import TabPool
 from filters import filter_job
+from job_history import normalize_url
 from logbridge import ScrapeAborted, console, set_web_log_hook
+
+
+# ── BOSS 薪资反爬解码 ─────────────────────────────────
+# 薪资数字被 kanzhun-mix 字体替换成私有区字符 U+E031~U+E03A，
+# 浏览器靠该字体把字符渲染回数字。textContent / 复制粘贴拿到的是乱码。
+# 映射：U+E031=0, U+E032=1, ..., U+E039=8, U+E03A=9（数字 = 码点 - 0xE031）
+_OBFUSCATED_BASE = 0xE031
+
+
+def decode_obfuscated(text: str | None) -> str:
+    """把 BOSS 反爬字体的私有区字符解码回数字，其余字符原样保留。"""
+    if not text:
+        return text
+    out = []
+    for ch in text:
+        cp = ord(ch)
+        if _OBFUSCATED_BASE <= cp <= _OBFUSCATED_BASE + 9:
+            out.append(str(cp - _OBFUSCATED_BASE))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _pick_dwell() -> float:
+    """模拟真人浏览节奏的停留时长（幂律式可变分布）。
+
+    真人看职位列表不是均匀停留：绝大多数扫一眼标题/薪资就走（1~3 秒），
+    少数感兴趣的才细读 JD（几十秒）。所以这里 ~85% 给 2~4 秒、~15% 给 8~30 秒，
+    方差大才更像人；反过来均匀的固定区间（每个都停 10~20 秒）反而是机器特征。
+    """
+    if random.random() < 0.85:
+        return random.uniform(2, 4)
+    return random.uniform(8, 30)
+
 
 # ── BOSS直聘搜索 URL ─────────────────────────────────
 SEARCH_URL = "https://www.zhipin.com/web/geek/jobs?query={keyword}&city={city_code}"
@@ -87,13 +121,26 @@ JS_EXTRACT_LIST = """
 (() => {
     const wraps = document.querySelectorAll('.job-card-wrap');
     const jobs = [];
+    const text = (root, selectors) => {
+        for (const selector of selectors) {
+            const value = root.querySelector(selector)?.textContent?.trim();
+            if (value) return value;
+        }
+        return '';
+    };
+    const texts = (root, selectors) => [...root.querySelectorAll(selectors)]
+        .map(el => el.textContent.trim())
+        .filter(Boolean);
+
     wraps.forEach((wrap) => {
         const box = wrap.querySelector('.job-card-box') || wrap;
         const nameEl = box.querySelector('.job-name');
         const salaryEl = box.querySelector('.job-salary');
         const expEl = box.querySelector('.text-experiece');
         const degEl = box.querySelector('.text-degree');
-        const companyEl = box.querySelector('.boss-name') || box.querySelector('.company-name');
+        // 搜索卡片没有 .text-experiece/.text-degree，经验/学历在 .tag-list 前两项
+        const tagLis = [...box.querySelectorAll('.tag-list li')].map(el => el.textContent.trim());
+        const companyEl = box.querySelector('.company-name') || box.querySelector('.boss-name');
         const locationEl = box.querySelector('.company-location');
         const href = nameEl ? nameEl.getAttribute('href') : '';
 
@@ -102,11 +149,19 @@ JS_EXTRACT_LIST = """
         jobs.push({
             title: nameEl.textContent.trim(),
             salary: salaryEl ? salaryEl.textContent.trim() : '',
-            experience: expEl ? expEl.textContent.trim() : '',
-            education: degEl ? degEl.textContent.trim() : '',
+            experience: expEl ? expEl.textContent.trim() : (tagLis[0] || ''),
+            education: degEl ? degEl.textContent.trim() : (tagLis[1] || ''),
             company: companyEl ? companyEl.textContent.trim() : '',
             location: locationEl ? locationEl.textContent.trim() : '',
-            url: href
+            hr_name: text(box, ['.boss-info .boss-name', '.boss-name']),
+            hr_title: text(box, ['.boss-info .boss-title', '.boss-title']),
+            hr_active: text(box, ['.boss-active-time', '.boss-online-tag', '[class*="active-time"]']),
+            company_size: text(box, ['.company-tag-list li:nth-child(1)', '.company-info .company-tag-list li:nth-child(1)']),
+            company_industry: text(box, ['.company-tag-list li:nth-child(2)', '.company-info .company-tag-list li:nth-child(2)']),
+            tags: texts(box, '.job-card-footer li, .job-card-footer span, .tag-list li, .tag-list span'),
+            jd: text(box, ['.job-card-desc', '.job-card-description', '.job-detail', '[class*="job-desc"]']),
+            already_contacted: /已沟通|继续沟通/.test(box.textContent) || /已沟通|继续沟通/.test(wrap.textContent),
+            url: href,
         });
     });
     return JSON.stringify(jobs);
@@ -255,6 +310,44 @@ JS_EXTRACT_DETAIL = """
 })()
 """
 
+# 点击卡片后弹出的右侧详情面板提取器。
+# JD 用 innerText：BOSS 在 <p class="desc"> 里塞了 visibility:hidden 的干扰 span
+# （内容如 "boss"/"BOSS直聘"），textContent 会把它们带进来，innerText 则按渲染结果排除。
+JS_EXTRACT_PANEL = """
+(() => {
+    const root = document.querySelector('.job-detail-container') || document.querySelector('.job-detail-box');
+    if (!root) return JSON.stringify({ empty: true });
+
+    const txt = (sel) => { const e = root.querySelector(sel); return e ? e.textContent.trim() : ''; };
+    const itxt = (sel) => { const e = root.querySelector(sel); return e ? e.innerText.trim() : ''; };
+
+    // 详情头：标题/薪资 + 标签（地点/经验/学历）
+    const tagLis = [...root.querySelectorAll('.job-detail-header .tag-list li')].map(e => e.textContent.trim());
+
+    const info = {};
+    info.title = txt('.job-detail-header .job-name') || txt('.job-name');
+    info.salary = txt('.job-detail-header .job-salary') || txt('.job-salary');
+    info.location = tagLis[0] || '';
+    info.experience = tagLis[1] || '';
+    info.education = tagLis[2] || '';
+    info.jd = itxt('.job-detail-body .desc');
+
+    // HR 信息
+    const nameH2 = root.querySelector('.job-boss-info h2.name');
+    info.hr_name = nameH2 ? (nameH2.childNodes[0]?.textContent || '').trim() : '';
+    info.hr_active = txt('.job-boss-info .boss-active-time');
+    const attr = txt('.job-boss-info .boss-info-attr');
+    const attrParts = attr.split('·').map(s => s.trim()).filter(Boolean);
+    info.company = attrParts[0] || '';
+    info.hr_title = attrParts[attrParts.length - 1] || '';
+
+    const chatBtn = root.querySelector('.op-btn-chat');
+    info.already_contacted = chatBtn ? chatBtn.textContent.includes('继续') : false;
+
+    return JSON.stringify(info);
+})()
+"""
+
 
 # ══════════════════════════════════════════════════════
 #  scrape() — 主爬虫
@@ -273,6 +366,10 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
     """
     all_jobs = []
     seen_urls = set()
+    # 由 run.py 在启动本轮爬取前注入：最近三次成功爬取的规范化职位 URL。
+    # 这一步发生在点击卡片前，历史岗位不会再打开详情页。
+    history_urls = set(cfg.get("_history_urls", ()))
+    history_skipped = 0
 
     combos = []
     for city in cities:
@@ -319,9 +416,130 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
         # 切到搜索 tab（仅 Chrome 内切换，不弹窗），确保 BOSS 懒加载生效
         browser._send_cdp("Target.activateTarget", {"targetId": search_tab})
 
-        collected_cards = []
+        # ── 滚动 + 点击交替：每轮滚动产生的新卡片，先逐个点击抓 JD，再滚下一轮 ──
+        filtered_count = 0
+        combo_collected = 0
+        clicked_seq = 0
         scroll_round = 0
         dry_rounds = 0
+
+        def process_card(card: dict) -> bool:
+            """点击一张卡片并抓 JD；返回 True 表示已满 target 应停止整个组合。"""
+            nonlocal combo_count, filtered_count, clicked_seq
+
+            if browser.is_shutdown:
+                raise ScrapeAborted()
+
+            # 解码列表卡片薪资（反爬字体），再做初步过滤
+            card["salary"] = decode_obfuscated(card.get("salary", ""))
+
+            # 列表卡片已标记"继续沟通"（已沟通过）的直接跳过，不再点击
+            if card.get("already_contacted"):
+                filtered_count += 1
+                console.print('    [dim]⏭ 已沟通过（卡片标记“继续沟通”），跳过[/dim]')
+                return False
+
+            keep, _reason = filter_job({**card}, cfg, max_exp)
+            if not keep:
+                filtered_count += 1
+                return False
+
+            clicked_seq += 1
+            company_preview = card.get("company", "?")[:12]
+            title_preview = card.get("title", "?")[:20]
+            console.print(f"  [dim]  📄 [{clicked_seq}] {company_preview} - {title_preview} ...[/dim]")
+
+            detail_url = f"https://www.zhipin.com{card.get('url', '')}"
+
+            # 点击对应卡片 → 右侧弹出详情面板（不整页跳转，保留搜索列表）
+            card_url = card.get("url", "")
+            clicked = browser.evaluate(search_tab, f"""
+            (() => {{
+                const href = {json.dumps(card_url)};
+                const wraps = [...document.querySelectorAll('.job-card-wrap')];
+                for (const w of wraps) {{
+                    const a = w.querySelector('.job-name');
+                    if (a && a.getAttribute('href') === href) {{ a.click(); return 'ok'; }}
+                }}
+                return 'not_found';
+            }})()
+            """)
+            if clicked != "ok":
+                # 卡片可能已滚出/列表重渲染，回退到直接导航详情页
+                console.print(f"    [dim]卡片未找到，改用直接导航[/dim]")
+                browser.navigate(search_tab, detail_url)
+                time.sleep(random.uniform(2.0, 3.0))
+
+            # 停留时长用幂律式可变分布：多数扫一眼就走，少数细读（见 _pick_dwell）
+            dwell = _pick_dwell()
+            console.print(f"    [dim]⏳ 停留 {dwell:.1f}s ...[/dim]")
+            dwell_deadline = time.time() + dwell
+            while time.time() < dwell_deadline:
+                if browser.is_shutdown:
+                    raise ScrapeAborted()
+                remaining = dwell_deadline - time.time()
+                if remaining <= 0:
+                    break
+                time.sleep(min(1.0, remaining))
+
+            # 提取右侧详情面板
+            raw = browser.evaluate(search_tab, JS_EXTRACT_PANEL, timeout=15)
+            detail = {}
+            try:
+                detail = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except (json.JSONDecodeError, TypeError):
+                detail = {}
+            if detail.get("empty"):
+                detail = {}
+
+            # 解码详情面板薪资
+            detail["salary"] = decode_obfuscated(detail.get("salary", ""))
+
+            # 跳过已沟通过的（按钮是"继续沟通"而非"立即沟通"）
+            if detail.get("already_contacted"):
+                filtered_count += 1
+                console.print(f"    [dim]⏭ 已沟通过，跳过[/dim]")
+                return False
+
+            job = {
+                "title": detail.get("title") or card.get("title", ""),
+                "company": detail.get("company") or card.get("company", ""),
+                "salary": detail.get("salary") or card.get("salary", ""),
+                "city": city,
+                "experience": detail.get("experience") or card.get("experience", ""),
+                "education": detail.get("education") or card.get("education", ""),
+                "hr_name": detail.get("hr_name", ""),
+                "hr_title": detail.get("hr_title", ""),
+                "hr_active": detail.get("hr_active", ""),
+                "company_size": card.get("company_size", ""),
+                "company_industry": card.get("company_industry", ""),
+                "url": detail_url,
+                "jd": detail.get("jd", ""),
+                "platform": "boss",
+            }
+
+            keep, reason = filter_job(job, cfg, max_exp)
+            if not keep:
+                filtered_count += 1
+                console.print(f"    [yellow]✗ 过滤({reason}): {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
+                if on_progress:
+                    on_progress("job_result", {"status": "filtered", "company": job.get("company",""),
+                               "title": job.get("title",""), "salary": job.get("salary",""),
+                               "experience": job.get("experience",""), "education": job.get("education","")})
+                return False
+
+            all_jobs.append(job)
+            combo_count += 1
+            console.print(f"    [green]✓ [{len(all_jobs)}] {job['salary']} | {job['experience']} | {job['education']} | JD {len(job.get('jd',''))}字[/green]")
+            if on_progress:
+                on_progress("job_result", {"status": "kept", "company": job.get("company",""),
+                           "title": job.get("title",""), "salary": job.get("salary",""),
+                           "experience": job.get("experience",""), "education": job.get("education","")})
+
+            if target_per_combo and combo_count >= target_per_combo:
+                console.print(f"  [green]✓ 已满{target_per_combo}个 ({combo_count}/{target_per_combo})[/green]")
+                return True
+            return False
 
         while scroll_round < max_scrolls:
             if browser.is_shutdown:
@@ -349,120 +567,48 @@ def scrape(browser, cfg: dict, keywords: list[str], cities: list[str],
             if not cards:
                 break
 
-            round_new = 0
+            round_new_cards = []
             for card in cards:
                 url = card.get("url", "")
                 if not url or url in seen_urls:
                     continue
                 seen_urls.add(url)
-                collected_cards.append(card)
-                round_new += 1
+                detail_url = normalize_url(
+                    url if url.startswith("http") else f"https://www.zhipin.com{url}"
+                )
+                if detail_url in history_urls:
+                    history_skipped += 1
+                    continue
+                combo_collected += 1
+                round_new_cards.append(card)
 
-            console.print(f"  [dim]第{scroll_round}轮滚动: {len(cards)} 张卡片, +{round_new} 新[/dim]")
+            console.print(f"  [dim]第{scroll_round}轮滚动: {len(cards)} 张卡片, +{len(round_new_cards)} 新[/dim]")
 
-            if round_new == 0:
+            if not round_new_cards:
                 dry_rounds += 1
                 if dry_rounds >= 3:
                     console.print("  [dim]连续3轮无新卡片，停止滚动[/dim]")
                     break
-            else:
-                dry_rounds = 0
-
-        console.print(f"  [bold]滚动阶段结束: 共收集 {len(collected_cards)} 个不重复卡片[/bold]")
-
-        # ── 阶段2：TabPool 并发开详情、提取、dwell ──
-        filtered_count = 0
-
-        # TabPool：最多 4 个并发 tab，每个停留 20-35s 模拟人类阅读，
-        # 开 tab 间隔 4-8s，逐个 stagger
-        pool = TabPool(browser, max_concurrent=4,
-                       dwell_range=(20, 35), stagger_range=(4, 8))
-
-        for job_data in collected_cards:
-            if browser.is_shutdown:
-                raise ScrapeAborted()
-
-            # 先用列表数据做初步过滤
-            keep, reason = filter_job({**job_data}, cfg, max_exp)
-            if not keep:
-                filtered_count += 1
                 continue
 
-            company_preview = job_data.get("company", "?")[:12]
-            title_preview = job_data.get("title", "?")[:20]
-            console.print(f"  [dim]  📄 {company_preview} - {title_preview} ... (池中 {pool.active_count} 个 tab)[/dim]")
+            dry_rounds = 0
 
-            detail_url = f"https://www.zhipin.com{job_data.get('url', '')}"
+            # 本轮新卡片逐个点击抓 JD，全部点完再进行下一次滚动
+            stop = False
+            for card in round_new_cards:
+                stop = process_card(card)
+                if stop:
+                    break
 
-            # TabPool.submit 自动处理: stagger → 开 tab → 激活 → 提取 → dwell
-            detail_result = pool.submit(
-                detail_url,
-                activate_js=JS_ACTIVATE_DETAIL,
-                extract_js=JS_EXTRACT_DETAIL,
-                activate_timeout=15,
-                extract_timeout=15,
-            )
-
-            if not detail_result:
-                console.print(f"    [red]✗ 提取失败[/red]")
-                continue
-
-            try:
-                detail = json.loads(detail_result) if isinstance(detail_result, str) else detail_result
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-            # 跳过已沟通过的（按钮是"继续沟通"而非"立即沟通"）
-            if detail.get("already_contacted"):
-                filtered_count += 1
-                console.print(f"    [dim]⏭ 已沟通过，跳过[/dim]")
-                continue
-
-            job = {
-                "title": detail.get("title") or job_data.get("title", ""),
-                "company": detail.get("company") or job_data.get("company", ""),
-                "salary": detail.get("salary") or job_data.get("salary", ""),
-                "city": city,
-                "experience": detail.get("experience") or job_data.get("experience", ""),
-                "education": detail.get("education") or job_data.get("education", ""),
-                "hr_name": detail.get("hr_name", ""),
-                "hr_title": detail.get("hr_title", ""),
-                "hr_active": detail.get("hr_active", ""),
-                "company_size": detail.get("company_size", ""),
-                "company_industry": detail.get("company_industry", ""),
-                "url": detail_url,
-                "jd": detail.get("jd", ""),
-                "platform": "boss",
-            }
-
-            keep, reason = filter_job(job, cfg, max_exp)
-            if not keep:
-                filtered_count += 1
-                console.print(f"    [yellow]✗ 过滤({reason}): {job.get('experience','')} | {job.get('education','')} | {job.get('salary','')}[/yellow]")
-                if on_progress:
-                    on_progress("job_result", {"status": "filtered", "company": job.get("company",""),
-                               "title": job.get("title",""), "salary": job.get("salary",""),
-                               "experience": job.get("experience",""), "education": job.get("education","")})
-                continue
-
-            all_jobs.append(job)
-            combo_count += 1
-            console.print(f"    [green]✓ [{len(all_jobs)}] {job['salary']} | {job['experience']} | {job['education']}[/green]")
-            if on_progress:
-                on_progress("job_result", {"status": "kept", "company": job.get("company",""),
-                           "title": job.get("title",""), "salary": job.get("salary",""),
-                           "experience": job.get("experience",""), "education": job.get("education","")})
-
-            if target_per_combo and combo_count >= target_per_combo:
-                console.print(f"  [green]✓ 已满{target_per_combo}个 ({combo_count}/{target_per_combo})[/green]")
+            if stop:
                 break
 
-        # 等所有剩余 tab dwell 结束
-        pool.drain()
-
-        console.print(f"  [bold]组合完成: +{combo_count} 保留[/bold] (过滤 {filtered_count}) [累计 {len(all_jobs)}]")
+        console.print(
+            f"  [bold]组合完成: +{combo_count} 保留[/bold] "
+            f"(过滤 {filtered_count}，历史跳过 {history_skipped}) [累计 {len(all_jobs)}]"
+        )
         if on_progress:
-            on_progress("page_result", {"page": 1, "page_jobs": len(collected_cards), "kept": combo_count,
+            on_progress("page_result", {"page": 1, "page_jobs": combo_collected, "kept": combo_count,
                        "filtered": filtered_count, "dup": 0, "total_kept": len(all_jobs),
                        "city": city, "keyword": keyword})
 

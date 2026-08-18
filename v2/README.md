@@ -102,6 +102,12 @@ python run.py -k "前端" -c "上海" -P boss
 # 全自动模式：爬 → 评 → 投，零确认
 python run.py -k "Python" -c "深圳" -p 2 -a
 
+# 准备发送：爬取 → SQLite 最近三次去重 → 评分筛选 → 生成招呼语，不发送
+python run.py -k "Python" -c "深圳" -p 2 -P boss --scrape-only
+
+# 发送 SQLite 待发送队列：不爬取、不评分、不询问
+python run.py --send-only
+
 # 从已有 JSON 进入（跳过爬虫）
 python run.py --json output\jobs_20260725_120000.json
 
@@ -127,6 +133,8 @@ python run.py --json output\jobs_20260725_120000.json --score-min 70
 | `--scale-min` | BOSS 公司最小规模（人数） | `--scale-min 20` |
 | `--scale-max` | BOSS 公司最大规模（人数） | `--scale-max 999` |
 | `-a, --auto` | 全自动模式：爬→评→生成→投递/发招呼语，零确认 | `-a` |
+| `--scrape-only` | 爬取→最近三次去重→评分→生成招呼语，写入 SQLite 待发送队列，不发送 | `--scrape-only` |
+| `--send-only` | 仅发送 SQLite 中已有招呼语的待发送岗位，不爬取、不评分、不确认 | `--send-only` |
 | `--json` | 跳过爬虫，从已有 JSON 进入批阅发送 | `--json output\jobs_xxx.json` |
 | `--score-min` | AI 评分阈值，低于此分自动筛掉 | `--score-min 70` |
 
@@ -141,6 +149,12 @@ python run.py --json output\jobs_20260725_120000.json --score-min 70
 | `t` 轻触 | 交互选择 `t` | 点"立即沟通"发默认招呼语 | 点"立即投递"投简历 | 否 | ~8s/条 |
 | `s` 逐个审 | 交互选择 `s`（默认） | 生成招呼语 → 确认入队 → 批量发 | 逐条确认 → 入队 → 批量投递 | 评分+生成 | 人工节奏 |
 | `a` 全投 | 交互选择 `a` 或 CLI `--auto` | 自动生成全部招呼语 → 批量发 | 全部入队 → 批量投递 | 评分+生成 | ~30s/条 |
+
+### SQLite 去重与待发送队列
+
+所有实际爬取都使用 `output/findjob_history.db`：同一规范化职位链接在最近三次成功爬取中出现过，就会跳过。普通爬取的新岗位状态为 `crawled`；下一次 `--auto` 或 `--scrape-only` 会把这些积压岗位与本次新岗位一起评分。评分不达标为 `screened_out`，招呼语失败为 `greeting_failed`，生成成功为 `ready_to_send`，发送成功为 `sent`。每次成功结束后，数据库只保留最近三次成功爬取中最后出现过的岗位；失败或中断的爬取不计入次数，也不会触发清理。
+
+超过评分阈值且成功生成招呼语的 BOSS 岗位会进入 `ready_to_send` 队列。执行 `python run.py --send-only` 后，发送成功的岗位会标记为 `sent`；发送失败的岗位仍会保留在队列中，供下次重试。
 
 ### 不同平台的区别
 

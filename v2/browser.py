@@ -237,13 +237,21 @@ class BrowserSession:
         return None
 
     def new_tab(self, url: str) -> str | None:
-        """打开新 tab，返回 targetId"""
+        """打开新 tab 并立即切到前台，返回 targetId。
+
+        先 createTarget(background=True) 再 activateTarget 切前台，而不是
+        直接 background=False：这样只激活 Chrome 内的这个 tab，不强夺 OS 的
+        焦点窗口。后台 tab 会被 Chrome 节流（rAF/timer 暂停），BOSS 的 Vue
+        懒加载不生效，所以必须在等渲染之前就切到前台。
+        """
         result = self._send_cdp("Target.createTarget", {"url": url, "background": True})
         if not result:
             return None
         target_id = result.get("targetId")
         if target_id:
             self._created_tabs.add(target_id)
+            # 立即激活：否则 Chrome 一直停在主页/上一个 tab，用户看不到搜索页
+            self._send_cdp("Target.activateTarget", {"targetId": target_id})
             self._attach(target_id)
             self._wait_for_load(target_id)
         return target_id
@@ -434,7 +442,7 @@ class TabPool:
     """管理一个并发 tab 池，控制最大并发、自动 stagger 和 dwell。
 
     用法:
-        pool = TabPool(browser, max_concurrent=4, dwell_range=(20, 35))
+        pool = TabPool(browser, max_concurrent=4, dwell_range=(10, 30))
         for url in urls:
             result = pool.submit(url, extract_js=JS_EXTRACT)
             # result 是提取到的数据，tab 继续在后台 dwell
@@ -443,7 +451,7 @@ class TabPool:
 
     def __init__(self, browser_session: BrowserSession,
                  max_concurrent: int = 4,
-                 dwell_range: tuple[float, float] = (20, 35),
+                 dwell_range: tuple[float, float] = (10, 30),
                  stagger_range: tuple[float, float] = (4, 8)):
         self._browser = browser_session
         self._browser_url = f"http://127.0.0.1:{browser_session.port}"

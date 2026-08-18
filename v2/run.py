@@ -34,6 +34,7 @@ from boss.sender import send_greeting, touch_job as boss_touch
 from zhaopin.scraper import scrape as scrape_zhaopin
 from zhaopin.sender import apply_job as zhilian_apply
 from browser import BrowserSession, check_chrome_connection, configure
+from job_history import JobHistory, normalize_url
 
 console = Console()
 HERE = Path(__file__).resolve().parent
@@ -177,10 +178,22 @@ def main():
     parser.add_argument("--score-min", type=int, default=None, help="评分阈值，低于此分自动筛掉")
     parser.add_argument("-r", "--resume", default=None, help="简历路径，覆盖 config.yaml")
     parser.add_argument("-a", "--auto", action="store_true", help="全自动：爬→评→生成→发，零确认")
-    parser.add_argument("--scrape-only", action="store_true", help="只爬取保存JSON，不评分不发送（适合无人值守）")
+    parser.add_argument("--scrape-only", action="store_true",
+                        help="全自动爬取→评分→生成招呼语，写入 SQLite 待发送队列，不发送")
+    parser.add_argument("--send-only", action="store_true",
+                        help="只发送 SQLite 待发送队列，不爬取、不评分、不确认")
     args = parser.parse_args()
 
+    if args.scrape_only and args.send_only:
+        parser.error("--scrape-only 和 --send-only 不能同时使用")
+    if args.scrape_only and args.json_file:
+        parser.error("--scrape-only 只能用于爬取，不能与 --json 同时使用")
+    if args.send_only and args.json_file:
+        parser.error("--send-only 从 SQLite 待发送队列读取，不能与 --json 同时使用")
+
     cfg = load_config()
+    output_dir = HERE / cfg.get("output_dir", "./output")
+    history = JobHistory(output_dir / "findjob_history.db")
 
     # ── CLI 参数覆盖 config ──────────────────────────
     if args.salary_min is not None:
@@ -202,6 +215,11 @@ def main():
 
     need_boss = args.platform in ("all", "boss")
     need_zhilian = args.platform in ("all", "zhaopin")
+    # send-only 的平台由 SQLite 待发送队列决定，避免只有 BOSS 岗位时仍要求启动智联浏览器。
+    if args.send_only:
+        send_jobs = history.ready_jobs()
+        need_boss = any(job.get("platform") != "zhaopin" for job in send_jobs)
+        need_zhilian = any(job.get("platform") == "zhaopin" for job in send_jobs)
 
     if need_boss:
         if not check_chrome_connection(boss_port):
@@ -231,21 +249,30 @@ def main():
         console.print(f"[green]✓ 智联 浏览器就绪 (port {zhilian_port})[/green]")
 
     # ── 加载简历 ─────────────────────────────────
-    resume_cfg = args.resume or cfg.get("resume_path", "../resume/resume.md")
-    resume_path = Path(resume_cfg)
-    if not resume_path.is_absolute():
-        resume_path = HERE / resume_path
-    if not resume_path.exists():
-        console.print(f"[yellow]简历不存在: {resume_path}，招呼语生成将受限[/yellow]")
+    if args.send_only:
+        # send-only 只消费 SQLite 中已生成的招呼语，无需简历或 AI。
         resume = ""
     else:
-        resume = resume_path.read_text(encoding="utf-8")
-        console.print(f"[green]✓ 简历已加载 ({len(resume)} 字符) → {resume_path}[/green]")
+        resume_cfg = args.resume or cfg.get("resume_path", "../resume/resume.md")
+        resume_path = Path(resume_cfg)
+        if not resume_path.is_absolute():
+            resume_path = HERE / resume_path
+        if not resume_path.exists():
+            console.print(f"[yellow]简历不存在: {resume_path}，招呼语生成将受限[/yellow]")
+            resume = ""
+        else:
+            resume = resume_path.read_text(encoding="utf-8")
+            console.print(f"[green]✓ 简历已加载 ({len(resume)} 字符) → {resume_path}[/green]")
 
     # ── 获取岗位列表 ──────────────────────────────
     jobs = []
+    crawl_run_id = None
+    history_only = False
 
-    if args.json_file:
+    if args.send_only:
+        jobs = history.ready_jobs()
+        console.print(f"[green]✓ 从 SQLite 待发送队列加载 {len(jobs)} 个岗位[/green]")
+    elif args.json_file:
         json_path = Path(args.json_file)
         if not json_path.exists():
             console.print(f"[red]文件不存在: {json_path}[/red]")
@@ -253,6 +280,9 @@ def main():
         jobs = json.loads(json_path.read_text(encoding="utf-8"))
         console.print(f"[green]✓ 从 JSON 加载 {len(jobs)} 个岗位[/green]")
     else:
+        # 所有实际爬取都会进入 SQLite 历史；--scrape-only 只是在此基础上继续评分和入发送队列。
+        crawl_run_id = history.start_run()
+        console.print(f"[dim]SQLite 爬取记录已创建（run_id={crawl_run_id}）[/dim]")
         # 解析参数
         kw_str = args.keywords or " ".join(cfg.get("search", {}).get("keywords", ["Python"]))
         keywords = kw_str.split()
@@ -280,18 +310,21 @@ def main():
         console.print()
 
         jobs = []
+        # 在详情页点击前提供历史 URL，让 BOSS 爬虫直接跳过最近三次已见岗位。
+        scrape_cfg = dict(cfg)
+        scrape_cfg["_history_urls"] = history.recent_urls()
 
         # 两个 scraper 并行跑，各用各的浏览器实例（真正并行，互不干扰）
         futures = {}
         with ThreadPoolExecutor(max_workers=2) as executor:
             if need_boss:
                 futures[executor.submit(
-                    scrape_boss, _boss_browser, cfg, keywords, cities,
+                    scrape_boss, _boss_browser, scrape_cfg, keywords, cities,
                     per_combo_pages, args.exp, target_per_combo, max_pages
                 )] = "BOSS"
             if need_zhilian:
                 futures[executor.submit(
-                    scrape_zhaopin, _zhilian_browser, cfg, keywords, cities,
+                    scrape_zhaopin, _zhilian_browser, scrape_cfg, keywords, cities,
                     per_combo_pages, args.exp, target_per_combo, max_pages
                 )] = "智联"
 
@@ -321,42 +354,167 @@ def main():
                 os._exit(0)
 
         if not jobs:
-            console.print("[yellow]没有匹配的岗位！[/yellow]")
-            sys.exit(0)
+            if crawl_run_id is not None:
+                if args.scrape_only:
+                    jobs = history.crawled_jobs()
+                    if jobs:
+                        history_only = True
+                        console.print(f"[green]本次未爬到新岗位，载入 {len(jobs)} 个待评分 crawled 岗位[/green]")
+                    else:
+                        history.complete_run(crawl_run_id, [], [], {})
+                        console.print("[yellow]没有匹配的岗位！[/yellow]")
+                        sys.exit(0)
+                else:
+                    history.complete_run(crawl_run_id, [], [], {})
+            if not args.scrape_only:
+                jobs = history.crawled_jobs()
+                if jobs:
+                    history_only = True
+                    console.print(f"[green]本次未爬到新岗位，载入 {len(jobs)} 个待处理 crawled 岗位[/green]")
+                else:
+                    console.print("[yellow]没有匹配的岗位！[/yellow]")
+                    sys.exit(0)
 
-        # 保存 JSON
+        # 普通模式同样在评分前按最近三次成功爬取去重，并把所有新岗位以 crawled 状态入库。
+        # scrape-only 需要先评分/生成招呼语，因此由其专属分支在后面完成入库。
+        if not args.scrape_only and not history_only:
+            pending_crawled = history.crawled_jobs()
+            recent_urls = history.recent_urls()
+            repeated_jobs = []
+            new_jobs = []
+            for job in jobs:
+                job["url"] = normalize_url(job.get("url", ""))
+                if job.get("url") in recent_urls:
+                    repeated_jobs.append(job)
+                else:
+                    new_jobs.append(job)
+            history.complete_run(crawl_run_id, new_jobs, repeated_jobs, {})
+            # 普通/--auto 模式会顺带处理以前被 Ctrl+C 留下的 crawled 岗位。
+            jobs_by_url = {job.get("url", ""): job for job in pending_crawled}
+            jobs_by_url.update({job.get("url", ""): job for job in new_jobs})
+            jobs = list(jobs_by_url.values())
+            console.print(
+                f"[bold]SQLite 去重：跳过最近三次已见 {len(repeated_jobs)} 个，"
+                f"本次新岗位 {len(new_jobs)} 个，待处理 crawled 共 {len(jobs)} 个[/bold]"
+            )
+            if not jobs:
+                console.print("[yellow]本次岗位均在最近三次爬取中出现过[/yellow]")
+                sys.exit(0)
+
+        # 常规交互模式保留原始 JSON 导出；scrape-only 的全部状态改由 SQLite 管理。
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = HERE / cfg.get("output_dir", "./output")
-        output_dir.mkdir(parents=True, exist_ok=True)
-        json_path = output_dir / f"jobs_{ts}.json"
-        json_path.write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
-        console.print(f"\n[green]✓ 已保存 {len(jobs)} 个岗位 → {json_path}[/green]")
+        if not args.scrape_only:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            json_path = output_dir / f"jobs_{ts}.json"
+            json_path.write_text(json.dumps(jobs, ensure_ascii=False, indent=2), encoding="utf-8")
+            console.print(f"\n[green]✓ 已保存 {len(jobs)} 个岗位 → {json_path}[/green]")
 
         if args.scrape_only:
-            console.print(f"[green] --scrape-only，退出（文件: {json_path}）[/green]")
+            # scrape-only 是“准备发送”模式：SQLite 同时承担最近三次去重和待发送队列。
+            if not resume:
+                console.print("[red]--scrape-only 需要有效简历，无法评分和生成招呼语[/red]")
+                history.fail_run(crawl_run_id)
+                sys.exit(1)
+
+            client = load_api_client(cfg)
+            model = cfg.get("ai", {}).get("model", "deepseek-chat")
+            score_threshold = (args.score_min if args.score_min is not None
+                               else cfg.get("scoring", {}).get("threshold"))
+            if score_threshold is None:
+                console.print("[red]--scrape-only 需要配置 scoring.threshold 或传入 --score-min[/red]")
+                history.fail_run(crawl_run_id)
+                sys.exit(1)
+
+            recent_urls = history.recent_urls()
+            pending_crawled = history.crawled_jobs()
+            repeated_jobs = []
+            new_jobs = []
+            for job in jobs:
+                job["url"] = normalize_url(job.get("url", ""))
+                if job.get("url") in recent_urls:
+                    repeated_jobs.append(job)
+                else:
+                    new_jobs.append(job)
+            if history_only:
+                # 此轮没有实际抓到这些岗位，不能把它们误记为“本轮再次出现”。
+                pending_crawled = jobs
+                repeated_jobs = []
+                new_jobs = []
+            console.print(
+                f"[bold]SQLite 去重：跳过最近三次已见 {len(repeated_jobs)} 个，"
+                f"本次新岗位 {len(new_jobs)} 个，历史 crawled {len(pending_crawled)} 个[/bold]"
+            )
+            jobs_by_url = {job.get("url", ""): job for job in pending_crawled}
+            jobs_by_url.update({job.get("url", ""): job for job in new_jobs})
+            jobs_to_process = list(jobs_by_url.values())
+            if not jobs_to_process:
+                history.complete_run(crawl_run_id, [], repeated_jobs, {})
+                console.print("[green]✓ scrape-only 完成：没有待评分岗位[/green]")
+                sys.exit(0)
+
+            console.print(f"\n[bold]scrape-only：自动评分中（阈值={score_threshold}）...[/bold]")
+            qualified_jobs = score_jobs(client, model, resume, jobs_to_process, score_threshold)
+
+            greetings = {}
+            # 新抓到但低于阈值的岗位同样要入库，才能在最近三次内避免重复处理。
+            statuses = {job["url"]: "screened_out" for job in jobs_to_process}
+            boss_jobs = [job for job in qualified_jobs if job.get("platform") != "zhaopin"]
+            for job in boss_jobs:
+                statuses[job["url"]] = "greeting_failed"
+            console.print(f"[bold]自动生成招呼语（{len(boss_jobs)} 个 BOSS 岗位）...[/bold]")
+            for index, job in enumerate(boss_jobs, 1):
+                console.print(
+                    f"[dim]  [{index}/{len(boss_jobs)}] {job['company']} - {job['title']} 生成中...[/dim]",
+                    end="\r",
+                )
+                greeting = generate_greeting(client, model, resume, job)
+                if not greeting:
+                    console.print(f"[yellow]  [{index}/{len(boss_jobs)}] 生成失败，跳过[/yellow]")
+                    continue
+                greetings[job["url"]] = greeting
+                statuses[job["url"]] = "ready_to_send"
+
+            history.complete_run(crawl_run_id, new_jobs, repeated_jobs, greetings, statuses)
+            # 历史 crawled 岗位本轮也完成了评分/招呼语生成，需回写其状态和评分结果。
+            history.update_processing(jobs_to_process, statuses, greetings)
+            console.print(
+                f"\n[green]✓ scrape-only 完成：{len(greetings)} 个岗位已写入 SQLite 待发送队列[/green]"
+            )
             sys.exit(0)
 
     # ── a/s/t/q 批阅 ────────────────────────────────
     if not jobs:
         sys.exit(0)
 
-    # Load API client
-    client = load_api_client(cfg)
+    # send-only 不调用 AI，也不要求 API 凭据可用。
+    client = None if args.send_only else load_api_client(cfg)
     model = cfg.get("ai", {}).get("model", "deepseek-chat")
 
     # ── 评分（CLI --score-min 覆盖 config） ──────────
     score_threshold = args.score_min if args.score_min is not None else cfg.get("scoring", {}).get("threshold")
-    if score_threshold is not None and resume:
+    if not args.send_only and score_threshold is not None and resume:
         if args.auto:
             console.print(f"\n[bold]自动评分中 (阈值={score_threshold}分)...[/bold]")
-            jobs = score_jobs(client, model, resume, jobs, score_threshold)
+            scored_jobs = jobs
+            jobs = score_jobs(client, model, resume, scored_jobs, score_threshold)
+            history.update_processing(
+                scored_jobs,
+                {job.get("url", ""): "screened_out" if job.get("score", 0) < score_threshold else "crawled"
+                 for job in scored_jobs},
+            )
             if not jobs:
                 console.print("[yellow]评分后无剩余岗位[/yellow]")
                 sys.exit(0)
         else:
             do_score = Prompt.ask(f"\n[bold]是否 AI 评分排序？[/bold] (阈值={score_threshold}分)", choices=["y", "n"], default="y")
             if do_score == "y":
-                jobs = score_jobs(client, model, resume, jobs, score_threshold)
+                scored_jobs = jobs
+                jobs = score_jobs(client, model, resume, scored_jobs, score_threshold)
+                history.update_processing(
+                    scored_jobs,
+                    {job.get("url", ""): "screened_out" if job.get("score", 0) < score_threshold else "crawled"
+                     for job in scored_jobs},
+                )
                 if not jobs:
                     console.print("[yellow]评分后无剩余岗位[/yellow]")
                     sys.exit(0)
@@ -364,7 +522,10 @@ def main():
     console.print()
     console.print(f"[bold cyan]═══ 批阅 {len(jobs)} 个岗位 ═══[/bold cyan]")
 
-    if args.auto:
+    if args.send_only:
+        choice = "send-only"
+        console.print("[bold green]  📤 send-only：仅发送 JSON 中已有的招呼语，零确认[/bold green]")
+    elif args.auto:
         choice = "1"
         console.print("[bold green]  🤖 全自动模式：爬→评→投递/发招呼语，零确认[/bold green]")
     else:
@@ -397,7 +558,22 @@ def main():
     # ═══════════════════════════════════════════
     pending = []
 
-    if choice == "1":
+    if choice == "send-only":
+        # 待发送 JSON 是 scrape-only 生成的岗位数组，每个 BOSS 岗位必须包含 _greeting。
+        for i, job in enumerate(jobs, 1):
+            if job.get("platform") == "zhaopin":
+                # 兼容手工加入的智联岗位：智联不需要招呼语，直接投递。
+                pending.append((job, ""))
+                continue
+            greeting = job.get("_greeting", "").strip()
+            if not greeting:
+                console.print(
+                    f"[yellow]  [{i}/{len(jobs)}] {job.get('company', '?')} - 缺少招呼语，跳过[/yellow]"
+                )
+                continue
+            pending.append((job, greeting))
+        console.print(f"\n[green]✓ 从待发送 JSON 加载 {len(pending)} 个岗位[/green]\n")
+    elif choice == "1":
         # 1 模式：BOSS=生成招呼语, 智联=直接投递 → 批量
         console.print(f"\n[bold]全投模式：{len(jobs)} 个岗位[/bold]\n")
         for i, job in enumerate(jobs, 1):
@@ -475,6 +651,15 @@ def main():
         console.print("\n[yellow]待发队列为空，退出[/yellow]")
         sys.exit(0)
 
+    # 无论队列来自 auto、交互选择还是 send-only，进入发送阶段即统一标记为待发送。
+    pending_statuses = {job.get("url", ""): "ready_to_send" for job, _ in pending}
+    pending_greetings = {
+        job.get("url", ""): greeting
+        for job, greeting in pending
+        if job.get("platform") != "zhaopin" and greeting
+    }
+    history.update_processing([job for job, _ in pending], pending_statuses, pending_greetings)
+
     console.print(f"\n[bold cyan]═══ 审岗完成，待处理 {len(pending)} 条 ═══[/bold cyan]")
     boss_count = sum(1 for j, _ in pending if j.get("platform") != "zhaopin")
     zhilian_count = sum(1 for j, _ in pending if j.get("platform") == "zhaopin")
@@ -487,12 +672,14 @@ def main():
     if boss_count > 0 and zhilian_count > 0:
         console.print(f"\n[dim]BOSS {boss_count} 条 + 智联 {zhilian_count} 条，两平台并行发送，互不等待[/dim]")
 
-    if not args.auto:
+    if not args.auto and not args.send_only:
         Prompt.ask("\n[bold]按回车开始批量处理...[/bold]", default="")
 
     # 拆成两个平台的队列，各自用独立浏览器并行发送
     boss_pairs = [(j, g) for j, g in pending if j.get("platform") != "zhaopin"]
     zhilian_pairs = [(j, g) for j, g in pending if j.get("platform") == "zhaopin"]
+    sent_urls = []
+    sent_urls_lock = threading.Lock()
 
     def _send_platform(browser, pairs, label, is_zhilian):
         """在一个浏览器上串行发送一批岗位（运行在 worker 线程中）"""
@@ -509,6 +696,8 @@ def main():
             if ok:
                 console.print(f"[green]  ✓ 已完成！[/green]")
                 sent += 1
+                with sent_urls_lock:
+                    sent_urls.append(job.get("url", ""))
             else:
                 console.print(f"[red]  ✗ 失败: {err}[/red]")
             # 断点续跑：保存剩余未发的（含已生成招呼语）
@@ -551,6 +740,7 @@ def main():
             os._exit(0)
 
     total = len(pending)
+    history.mark_sent(sent_urls)
     _clear_resume()  # 全部完成，清除断点文件
     console.print(f"\n[bold green]═══ 批量完成！成功 {sent}/{total} ═══[/bold green]")
 

@@ -4,6 +4,8 @@ config_1.yaml
 
 # 杂项
 TODO.md
+logout_boss.py
+temp.txt
 
 # Python
 venv/
